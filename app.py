@@ -37,10 +37,12 @@ def trivia():
             2,  # zhb "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?
             3,  # zhb "MST Calculation": What is the average number of nodes in a test case?
             4,  # zhb "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
-            4,  # "Operation Safeguard": What is the smallest font size in our question?
+            4,  # zhb "Operation Safeguard": What is the smallest font size in our question?
             5,  # zhb "Capture The Flag": Which of these are anagrams of the challenge name?
             4,  # zhb "Filler 1": Where has UBS Global Coding Challenge been held before?
-            3   # zhb "Trading Formula": When comparing your answer to the correct answer, what precision level do you have to ensure your answer is precise to?
+            3,  # zhb "Trading Formula": When comparing your answer to the correct answer, what precision level do you have to ensure your answer is precise to?
+            3,  # zhb "Filler (Encore)": What are the Three Pillars of UBS?
+            1 # chase the flag prefix
         ]
     }
     return jsonify(res), 200
