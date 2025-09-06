@@ -1666,297 +1666,188 @@ class MicroMouseSimulation:
         elif current_y > target_y:
             return ["L", "F2"]  # Head south
         else:
-            # F?/V? translation: move one half-step along current heading
-            dist_cm, base_t = move_half_step_distance(g.mouse.heading_step)
-            red = reduction_from_meff(eff)
-            ms = round_ms(base_t * (1.0 - red))
-            ok = apply_translation(g.maze, g.mouse, dist_cm)
-            if not ok:
-                g.crashed = True
-                return
-            add_time(g, ms, True)
-            # Momentum update
-            g.mouse.momentum = m_out
-            # End rotation free
-            rotate_in_place(g.mouse, endr)
-            on_reach_goal_if_any(g)
-            return
-
-    # Corner turns
-    if token_is_corner(token):
-        # Parse: a b c [d] => (F/V)(0/1/2)(L/R)(T/W)[(L/R)]
-        a, b, c, d, e = token[0], token[1], token[2], token[3], token[4] if len(token) == 5 else None
-        # Constraints
-        if not heading_is_cardinal(g.mouse.heading_step):
-            g.crashed = True
-            return
-        # Direction agreement
-        curt_dir = 1 if g.mouse.momentum >= 0 else -1 if g.mouse.momentum < 0 else 0
-        tok_dir = 1 if a == "F" else -1
-        if curt_dir != 0 and curt_dir != tok_dir:
-            g.crashed = True
-            return
-        if illegal_reverse_accel(g.mouse.momentum, a + b):
-            g.crashed = True
-            return
-        m_out = adjust_momentum(g.mouse.momentum, a + b)
-        eff = meff(g.mouse.momentum, m_out)
-        limit = 1.0 if d == "T" else 2.0
-        if eff > limit:
-            g.crashed = True
-            return
-        base = BASE_CORNER_T if d == "T" else BASE_CORNER_W
-        red = reduction_from_meff(eff)
-        ms = round_ms(base * (1.0 - red))
-        # Approximate arc: move center by quarter-circle chord length to next half-step corner
-        # For empty maze with only perimeter, we assume arc stays inside bounds
-        # Advance center to the next cell corner approximately:
-        # Move half cell in the perpendicular axis (tight ~8 cm radius arc).
-        # Use a small segmented move to stay within bounds.
-        segs = 8
-        ang_delta = (math.pi / 2) / segs
-        radius = CELL_CM / 2.0 if d == "T" else CELL_CM  # 8 cm or 16 cm
-        # Starting at heading cardinal; orbit center along arc with center offset to inside corner
-        # Approximate by step-wise translation inside bounds
-        # Given simplicity and empty maze, we just ensure perimeter not crossed:
-        ok = True
-        # Emulate a short move within current cell bounds
-        # Use small epsilon moves towards the corner
-        step_cm = max(1.0, radius / segs)
-        for _ in range(segs):
-            if not apply_translation(g.maze, g.mouse, step_cm):
-                ok = False
-                break
-        if not ok:
-            g.crashed = True
-            return
-        # Apply heading change
-        corner_apply_heading(g.mouse, c, e)
-        add_time(g, ms, True)
-        g.mouse.momentum = m_out
-        on_reach_goal_if_any(g)
-        return
-
-    # Plain translations and braking
-    t = token
-    # Opposite-direction accel rule
-    if illegal_reverse_accel(g.mouse.momentum, t):
-        g.crashed = True
-        return
-
-    # BB at rest -> default action
-    if t == "BB" and abs(g.mouse.momentum) == 0:
-        add_time(g, BASE_DEFAULT_AT_REST, run_is_started)
-        return
-
-    # BB with |m|>0: still moves one half-step toward momentum direction
-    if t == "BB" and abs(g.mouse.momentum) > 0:
-        dist_cm, base_t = move_half_step_distance(g.mouse.heading_step)
-        m_out = adjust_momentum(g.mouse.momentum, t)
-        eff = meff(g.mouse.momentum, m_out)
-        red = reduction_from_meff(eff)
-        ms = round_ms(base_t * (1.0 - red))
-        ok = apply_translation(g.maze, g.mouse, dist_cm)
-        if not ok:
-            g.crashed = True
-            return
-        add_time(g, ms, True)
-        g.mouse.momentum = m_out
-        on_reach_goal_if_any(g)
-        return
-
-    # F?/V? translation: move one half-step in current heading
-    if t[0] in ("F", "V") and t[1] in ("0", "1", "2"):
-        m_out = adjust_momentum(g.mouse.momentum, t)
-        eff = meff(g.mouse.momentum, m_out)
-        dist_cm, base_t = move_half_step_distance(g.mouse.heading_step)
-        red = reduction_from_meff(eff)
-        ms = round_ms(base_t * (1.0 - red))
-        ok = apply_translation(g.maze, g.mouse, dist_cm)
-        if not ok:
-            g.crashed = True
-            return
-        add_time(g, ms, True)
-        g.mouse.momentum = m_out
-        on_reach_goal_if_any(g)
-        return
-
-    # Otherwise unrecognized -> crash
-    g.crashed = True
-
-def apply_thinking_time(g: ChallengeState, instructions: List[str]) -> None:
-    if instructions:
-        add_time(g, 50, run_started(g))
-
-def simulate_batch(g: ChallengeState, instructions: List[str], end_flag: bool) -> None:
-    if g.crashed or g.ended:
-        return
-    if end_flag:
-        g.ended = True
-        return
-    # Empty or invalid instruction array -> crash
-    if instructions is None or not isinstance(instructions, list):
-        g.crashed = True
-        return
-    if len(instructions) == 0:
-        g.crashed = True
-        return
-
-    apply_thinking_time(g, instructions)
-
-    for token in instructions:
-        if g.crashed or g.ended:
-            break
-        process_instruction(g, token)
-
-    # Time budget end
-    if g.total_time_ms >= TIME_BUDGET_MS:
-        g.ended = True
-
-    # New run if at start center with momentum 0
-    if not g.crashed and not g.ended:
-        if g.maze.at_start_center(g.mouse.x, g.mouse.y) and g.mouse.momentum == 0:
-            # Start a new run
-            g.run += 1
-            g.run_time_ms = 0
-            g.goal_reached = False
-
-# Controller
-def controller_plan(g: ChallengeState, sensed: List[int]) -> List[str]:
-    # Planner: avoid rotations when moving; can return a one-shot preplan for empty perimeter maze
-    if g.goal_reached:
-        return ["BB", "BB"]
-
-    left_45 = sensed[1] if len(sensed) > 1 else 1
-    front = sensed[2] if len(sensed) > 2 else 1
-    right_45 = sensed[3] if len(sensed) > 3 else 1
-    forward_cone_clear = (left_45 == 0 and front == 0 and right_45 == 0)
-
-    # If at the exact start pose (center of start cell) with momentum 0 and haven't sent plan, preplan
-    if g.maze.at_start_center(g.mouse.x, g.mouse.y) and g.mouse.momentum == 0 and not g.preplanned_sent:
-        # Open maze preplan to stop at (128,128) inside goal interior:
-        # - Move north 13 half-steps to y=112 with m=+4, then BB,BB -> y=128, m=0
-        # - Turn east (R,R), then same pattern to x=128, m=0
-        plan: List[str] = []
-        plan += ["F2"] * 13
-        plan += ["BB", "BB"]
-        plan += ["R", "R"]
-        plan += ["F2"] * 13
-        plan += ["BB", "BB"]
-        g.preplanned_sent = True
-        return plan
-
-    if g.mouse.momentum < 0:
-        return ["V0"]
-
-    # If blocked ahead, brake; when stopped, rotate in place
-    if not forward_cone_clear:
-        if g.mouse.momentum > 0:
-            return ["BB"]
-        return ["L", "L"]
-
-    # At rest and clear ahead: advance one safe half-step only
-    if g.mouse.momentum == 0:
-        return ["F2"]
-
-    # Otherwise keep accelerating/holding forward
-    return ["F2"] if g.mouse.momentum < 2 else ["F1"]
-
-@app.route("/micro-mouse", methods=["POST"])
-def micro_mouse():
-    payload = request.get_json(force=True, silent=True) or {}
-
-    game_uuid = payload.get("game_uuid")
-    if not game_uuid or not isinstance(game_uuid, str):
-        return jsonify({"error": "game_uuid required"}), 400
-
-    g = get_game(game_uuid)
-
-    # Sync inbound authoritative fields (planner mode in external simulator)
-    # This prevents illegal plans like rotating while the sim has non-zero momentum
-    if isinstance(payload.get("total_time_ms"), (int, float)):
-        g.total_time_ms = int(payload["total_time_ms"])  # rounded externally
-    if isinstance(payload.get("run_time_ms"), (int, float)):
-        g.run_time_ms = int(payload["run_time_ms"])  # rounded externally
-    if "best_time_ms" in payload:
-        best = payload.get("best_time_ms")
-        g.best_time_ms = int(best) if isinstance(best, (int, float)) else None
-    if isinstance(payload.get("goal_reached"), bool):
-        g.goal_reached = payload["goal_reached"]
-    if isinstance(payload.get("run"), int):
-        g.run = payload["run"]
-    if isinstance(payload.get("momentum"), (int, float)):
-        g.mouse.momentum = clamp_momentum(int(payload["momentum"]))
-
-    if payload.get("end") is True:
-        g.ended = True
-        # Scoring
-        score_time = None
-        if g.best_time_ms is not None:
-            score_time = g.best_time_ms + (g.total_time_ms / 30.0)
-        return jsonify({
-            "instructions": [],
-            "end": True,
-            "score_time": score_time,
-        })
-
-    sensor_data = payload.get("sensor_data")
-    if not isinstance(sensor_data, list) or len(sensor_data) != 5:
-        sensor_data = g.maze.sensor_hits(g.mouse.x, g.mouse.y, g.mouse.heading_step)
-
-    instructions = payload.get("instructions")
-    if instructions is not None:
-        if payload.get("end") is True:
-            g.ended = True
+            return ["F2"]  # Continue current direction
+    
+    def _speed_run_strategy(self, game_state: Dict) -> List[str]:
+        """Fast run to goal using known path"""
+        position = game_state['position']
+        
+        # Check if goal reached
+        if self._is_in_goal_interior(position):
+            if game_state['momentum'] != 0:
+                return ["BB"]
+            else:
+                return ["F0"]  # Stay stopped in goal
+        
+        # Fast path to goal (simplified - in practice use A* with known walls)
+        target_x, target_y = 8.0, 8.0  # Goal center
+        current_x, current_y = position
+        
+        if current_x < target_x:
+            return ["F2"]  # Head east quickly
+        elif current_y < target_y:
+            return ["L", "F2"]  # Head north quickly
         else:
-            simulate_batch(g, instructions, False)
-            g.last_sent_instructions = []  # caller supplied; do not re-simulate
-    else:
-        # No instructions from caller: assume last response's instructions were executed by caller;
-        # simulate them locally so our internal position advances for planning/scoring.
-        if g.last_sent_instructions:
-            simulate_batch(g, g.last_sent_instructions, False)
-            g.last_sent_instructions = []
-
-    on_reach_goal_if_any(g)
-
-    # If the judge indicates we've reached the goal (or we detected it), end immediately to lock in score
-    if g.goal_reached:
-        g.ended = True
-        score_time = None
-        if g.best_time_ms is not None:
-            score_time = g.best_time_ms + (g.total_time_ms / 30.0)
-        return jsonify({
-            "instructions": [],
-            "end": True,
-            "score_time": score_time,
+            return ["F2"]  # Continue toward goal
+    
+    def process_mouse_update(self, request_data: Dict) -> Dict:
+        """Process mouse state update and return instructions"""
+        
+        game_uuid = request_data.get('game_uuid')
+        if not game_uuid:
+            return {"error": "game_uuid is required"}
+        
+        # Get current game state
+        game_state = self._get_game_state(game_uuid)
+        
+        # Check for crashed state
+        if game_state['crashed']:
+            return {
+                "instructions": [],
+                "end": True,
+                "error": "Game already crashed"
+            }
+        
+        # Update game state from request
+        game_state.update({
+            'total_time_ms': request_data.get('total_time_ms', game_state['total_time_ms']),
+            'goal_reached': request_data.get('goal_reached', game_state['goal_reached']),
+            'best_time_ms': request_data.get('best_time_ms', game_state['best_time_ms']),
+            'run_time_ms': request_data.get('run_time_ms', game_state['run_time_ms']),
+            'run': request_data.get('run', game_state['run']),
+            'momentum': request_data.get('momentum', game_state['momentum'])
         })
+        
+        # Check time budget
+        if game_state['total_time_ms'] >= self.TIME_BUDGET:
+            return {
+                "instructions": [],
+                "end": True,
+                "reason": "Time budget exceeded"
+            }
+        
+        # Get sensor data
+        sensor_data = request_data.get('sensor_data', [0, 0, 0, 0, 0])
+        
+        # Calculate next instructions
+        instructions = self._calculate_next_instruction(game_state, sensor_data)
+        
+        # Add thinking time to total (50ms per request)
+        game_state['total_time_ms'] += self.THINKING_TIME
+        
+        # Check if we should end (goal reached multiple times or optimal solution found)
+        should_end = (
+            game_state['best_time_ms'] is not None and 
+            game_state['strategy_state'] == 'speed_run' and
+            game_state['goal_reached']
+        )
+        
+        if should_end:
+            score = self._calculate_score(game_state['total_time_ms'], game_state['best_time_ms'])
+            return {
+                "instructions": [],
+                "end": True,
+                "final_score": score,
+                "best_time_ms": game_state['best_time_ms'],
+                "total_time_ms": game_state['total_time_ms']
+            }
+        
+        return {
+            "instructions": instructions,
+            "end": False
+        }
+    
+    def _calculate_score(self, total_time_ms: int, best_time_ms: Optional[int]) -> Optional[float]:
+        """Calculate final score: score_time = 1/30 * total_time_ms + best_time_ms"""
+        if best_time_ms is None:
+            return None
+        return (1/30 * total_time_ms) + best_time_ms
 
-    next_instr = controller_plan(g, sensor_data)
+# Global simulation instance
+simulation = MicroMouseSimulation()
 
-    if g.crashed:
-        return jsonify({
-            "instructions": [],
-            "end": True,
-            "crash": True
-        })
+@app.route('/micro-mouse', methods=['POST'])
+def micro_mouse():
+    """Main API endpoint for micro-mouse simulation"""
+    
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+        
+        # Handle end request
+        if data.get('end', False):
+            game_uuid = data.get('game_uuid')
+            if game_uuid and game_uuid in simulation.games:
+                game_state = simulation.games[game_uuid]
+                score = simulation._calculate_score(
+                    game_state['total_time_ms'], 
+                    game_state['best_time_ms']
+                )
+                return jsonify({
+                    "end": True,
+                    "final_score": score,
+                    "best_time_ms": game_state['best_time_ms'],
+                    "total_time_ms": game_state['total_time_ms']
+                })
+            return jsonify({"end": True})
+        
+        # Process mouse update and return instructions
+        result = simulation.process_mouse_update(data)
+        
+        if "error" in result:
+            return jsonify(result), 400
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
-    if g.total_time_ms >= TIME_BUDGET_MS:
-        g.ended = True
-        score_time = None
-        if g.best_time_ms is not None:
-            score_time = g.best_time_ms + (g.total_time_ms / 30.0)
-        return jsonify({
-            "instructions": [],
-            "end": True,
-            "score_time": score_time,
-        })
-
-    g.last_sent_instructions = list(next_instr)
+@app.route('/game/<game_uuid>/status', methods=['GET'])
+def get_game_status(game_uuid: str):
+    """Get current game status"""
+    if game_uuid not in simulation.games:
+        return jsonify({"error": "Game not found"}), 404
+    
+    game_state = simulation.games[game_uuid]
+    score = simulation._calculate_score(
+        game_state['total_time_ms'], 
+        game_state['best_time_ms']
+    )
+    
     return jsonify({
-        "instructions": next_instr,
-        "end": False
+        "game_uuid": game_uuid,
+        "position": game_state['position'],
+        "momentum": game_state['momentum'],
+        "direction": game_state['direction'],
+        "total_time_ms": game_state['total_time_ms'],
+        "run": game_state['run'],
+        "run_time_ms": game_state['run_time_ms'],
+        "goal_reached": game_state['goal_reached'],
+        "best_time_ms": game_state['best_time_ms'],
+        "current_score": score,
+        "strategy_state": game_state['strategy_state'],
+        "crashed": game_state['crashed']
     })
+
+@app.route('/new-game', methods=['POST'])
+def new_game():
+    """Create a new game"""
+    game_uuid = str(uuid.uuid4())
+    game_state = simulation._get_game_state(game_uuid)
+    
+    return jsonify({
+        "game_uuid": game_uuid,
+        "initial_state": {
+            "position": game_state['position'],
+            "momentum": game_state['momentum'],
+            "direction": game_state['direction']
+        }
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
 
 
 # ==============================
