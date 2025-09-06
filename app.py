@@ -1025,39 +1025,16 @@ def mages_gambit():
     """
     try:
         payload = request.get_json(silent=True)
-        if not isinstance(payload, list):
-            return jsonify({"error": "Expected array of test cases"}), 400
 
         results = []
 
         for test_case in payload:
-            if not isinstance(test_case, dict):
-                return jsonify({"error": "Each test case must be an object"}), 400
 
             intel = test_case.get("intel", [])
             reserve = test_case.get("reserve", 0)
             fronts = test_case.get("fronts", 0)
             stamina = test_case.get("stamina", 0)
 
-            # Validate inputs
-            if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int) or not isinstance(fronts, int):
-                return jsonify({"error": "Invalid input types"}), 400
-
-            if reserve <= 0 or stamina <= 0:
-                return jsonify({"error": "'reserve' and 'stamina' must be positive"}), 400
-
-            for attack in intel:
-                if not isinstance(attack, list) or len(attack) != 2:
-                    return jsonify({"error": "Each intel entry must be [front, mp_cost]"}), 400
-                front, mp_cost = attack
-                if not isinstance(front, int) or not isinstance(mp_cost, int):
-                    return jsonify({"error": "Front and MP cost must be integers"}), 400
-                if front < 1:
-                    return jsonify({"error": "Front must be >= 1"}), 400
-                if fronts > 0 and front > fronts:
-                    return jsonify({"error": f"Front must be between 1 and {fronts}"}), 400
-                if mp_cost < 1 or mp_cost > reserve:
-                    return jsonify({"error": f"MP cost must be between 1 and {reserve}"}), 400
 
             # Calculate minimum time
             min_time = calculate_mage_combat_time(intel, reserve, stamina)
