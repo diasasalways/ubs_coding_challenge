@@ -2413,6 +2413,25 @@ def debug_transform_example():
     print(f"Reverse result: {result}")
     print(f"Matches original: {result == test_input}")
 
+@app.route("/chasetheflag", methods=["POST"])
+def chase_the_flag():
+    """
+    Chase the Flag endpoint - returns flags for the challenges
+    
+    Challenge 1: "nOO9QiTIwXgNtWtBJezz8kv3SLc" - Found in ETag header (What you see may not always be what you get)
+    Challenge 2: "ZmQ3MzNkNGNlNDI5" - Found via trusted mechanisms 
+    Challenge 3: Headers can carry more than just information
+    Challenge 4: Sometimes, the key is simpler than you think
+    Challenge 5: Some flaws hide in plain sight. Look closely
+    """
+    return jsonify({
+        "challenge1": "nOO9QiTIwXgNtWtBJezz8kv3SLc",
+        "challenge2": "ZmQ3MzNkNGNlNDI5", 
+        "challenge3": "",
+        "challenge4": "",
+        "challenge5": ""
+    }), 200
+
 @app.route('/operation-safeguard', methods=['POST'])
 def operation_safeguard():
     def _safe_str(x: Any) -> str:
