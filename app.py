@@ -25,16 +25,6 @@ def root():
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
 
-def is_vowel(char):
-    return char.lower() in 'aeiou'
-
-def is_consonant(char):
-    return char.isalpha() and not is_vowel(char)
-
-# =========================
-# Challenge 1: Reverse Obfuscation Analysis (FIXED)
-# =========================
-
 def atbash_char(c):
     if 'A' <= c <= 'Z':
         return chr(ord('Z') - (ord(c) - ord('A')))
@@ -44,6 +34,12 @@ def atbash_char(c):
 
 def atbash_string(s):
     return ''.join(atbash_char(c) for c in s)
+
+def is_vowel(char):
+    return char.lower() in 'aeiou'
+
+def is_consonant(char):
+    return char.isalpha() and not is_vowel(char)
 
 def reverse_each_word_preserve_ws(s):
     parts = re.split(r'(\s+)', s)
@@ -112,8 +108,81 @@ def collapse_double_consonants_word(word):
             i += 1
     return ''.join(result)
 
+def parse_nested_functions(transform_str):
+    """
+    Parse nested function calls like 'double_consonants(swap_pairs(x))'
+    Returns list of functions in order of application (innermost first)
+    """
+    transform_str = transform_str.strip()
+    
+    # Stack to track function calls
+    functions = []
+    current_func = ""
+    paren_count = 0
+    i = 0
+    
+    while i < len(transform_str):
+        char = transform_str[i]
+        
+        if char == '(':
+            if paren_count == 0 and current_func:
+                # Start of a function call
+                functions.append(current_func.strip())
+                current_func = ""
+            paren_count += 1
+        elif char == ')':
+            paren_count -= 1
+            if paren_count == 0:
+                # End of function call - check if there's content for nested function
+                if current_func.strip() and current_func.strip() != 'x':
+                    # This is a nested function
+                    nested = parse_nested_functions(current_func.strip())
+                    functions.extend(nested)
+                current_func = ""
+        elif paren_count > 0:
+            # Inside parentheses
+            current_func += char
+        elif paren_count == 0 and char.isalpha() or char == '_':
+            # Building function name
+            current_func += char
+        
+        i += 1
+    
+    # Handle case where there's a trailing function name without parentheses
+    if current_func.strip() and paren_count == 0:
+        functions.append(current_func.strip())
+    
+    return functions
+
+def parse_all_transformations(transformations):
+    """
+    Parse all transformations, handling both simple and nested cases
+    Returns flattened list of functions in order of application
+    """
+    all_functions = []
+    
+    for transform in transformations:
+        if not isinstance(transform, str):
+            continue
+            
+        transform = transform.strip()
+        
+        # Check if this looks like a nested function call
+        if '(' in transform and ')' in transform:
+            # Parse nested structure
+            nested_funcs = parse_nested_functions(transform)
+            all_functions.extend(nested_funcs)
+        else:
+            # Simple function name
+            clean_name = transform
+            if '(' in clean_name:
+                clean_name = clean_name.split('(')[0]
+            all_functions.append(clean_name.strip())
+    
+    return all_functions
+
 def reverse_transformations(transformations, transformed_input):
-    """Apply transformations in reverse order with correct inverses"""
+    """Apply transformations in reverse order with correct inverses, handling nested encodings"""
     # Handle both string and list inputs per clarification
     if isinstance(transformed_input, str):
         current = transformed_input
@@ -150,25 +219,18 @@ def reverse_transformations(transformations, transformed_input):
         "double_consonants": inv_double_consonants
     }
 
-    # Extract function names from strings like "encode_mirror_alphabet(x)"
-    def extract_function_name(transform_str):
-        # Handle both "function_name(x)" and "function_name" formats
-        clean_name = transform_str.strip()
-        if '(' in clean_name:
-            clean_name = clean_name.split('(')[0]
-        return clean_name
-
-    # Apply inverses in reverse order
-    function_names = [extract_function_name(t) for t in transformations]
+    # Parse all transformations, handling nested cases
+    all_functions = parse_all_transformations(transformations)
     
-    for func_name in reversed(function_names):
+    # Apply inverses in reverse order
+    for func_name in reversed(all_functions):
         if func_name in inverses:
             current = inverses[func_name](current)
 
     return current.strip()
 
 # =========================
-# Challenge 2: Coordinate digit recognition (WORKING)
+# Rest of the code remains the same...
 # =========================
 
 def extract_number_from_coordinates(coords):
@@ -258,10 +320,6 @@ def extract_number_from_coordinates(coords):
             best_digit = digit
     
     return best_digit
-
-# =========================
-# Challenge 3: Operational Intelligence Extraction (WORKING)
-# =========================
 
 def parse_log_entry(log_text):
     """Parse log entry to extract cipher type and payload"""
@@ -449,10 +507,6 @@ def decrypt_log_entry(log_text):
     else:
         return payload
 
-# =========================
-# Challenge 4: Final Communication Decryption (FIXED)
-# =========================
-
 def vigenere_decrypt(ciphertext, key):
     """Decrypt Vigenère cipher"""
     if not key:
@@ -624,10 +678,6 @@ def final_decryption(keyword, number, ciphertext):
             best_result = attempt
     
     return best_result
-
-# =========================
-# Flask endpoint
-# =========================
 
 @app.route('/operation-safeguard', methods=['POST'])
 def operation_safeguard():
