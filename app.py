@@ -1550,20 +1550,23 @@ def controller_plan(g: ChallengeState, sensed: List[int]) -> List[str]:
     if g.goal_reached:
         return ["BB", "BB"]
 
-    front = sensed[2]
+    left_45 = sensed[1] if len(sensed) > 1 else 1
+    front = sensed[2] if len(sensed) > 2 else 1
+    right_45 = sensed[3] if len(sensed) > 3 else 1
+    forward_cone_clear = (left_45 == 0 and front == 0 and right_45 == 0)
 
     if g.mouse.momentum < 0:
         return ["V0"]
 
     # If blocked ahead, brake; when stopped, rotate in place
-    if front == 1:
+    if not forward_cone_clear:
         if g.mouse.momentum > 0:
             return ["BB"]
         return ["L", "L"]
 
-    # At rest and clear ahead: emit sample burst
+    # At rest and clear ahead: advance one safe half-step only
     if g.mouse.momentum == 0:
-        return ["F2", "F2", "BB"]
+        return ["F2"]
 
     # Otherwise keep accelerating/holding forward
     return ["F2"] if g.mouse.momentum < 2 else ["F1"]
