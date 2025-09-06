@@ -1001,85 +1001,105 @@ def duolingo_sort():
     return jsonify({"sortedList": result})
 
 
+app.url_map.strict_slashes = False
+
 RETARGET_TIME = 10
 COOLDOWN_TIME = 10
 
-def estimate_time_scenario(scn):
-	# Basic extraction with defaults
-	intel = scn.get('intel', []) or []
-	reserve = scn.get('reserve', 0)
-	stamina_max = scn.get('stamina', 0)
-
-	# Edge cases
-	if not isinstance(intel, list):
-		return -1
-	if len(intel) == 0:
-		return 0
-	if stamina_max <= 0:
-		return -1
-	if reserve < 0:
-		return -1
-
-	# Validate and early impossibility checks
-	for entry in intel:
-		if (not isinstance(entry, (list, tuple))) or len(entry) != 2:
-			return -1
-		_, cost = entry
-		if not isinstance(cost, int):
-			return -1
-		if cost < 0:
-			return -1
-		if cost > reserve:
-			return -1
-
+def calculate_mage_combat_time(intel, reserve, stamina):
 	time = 0
+	n = len(intel)
+	if n == 0:
+		return COOLDOWN_TIME  # must be in cooldown to be ready to depart
+
 	mana = reserve
-	stamina = stamina_max
+	stam = stamina
 	prev_front = None
+	i = 0
 
-	for front, cost in intel:
-		# Ensure types for front as well, but only for robustness
-		if not isinstance(front, int):
-			return -1
+	while i < n:
+		front = intel[i][0]
+		# compute maximal run of same front [i..j)
+		j = i
+		total_mp = 0
+		while j < n and intel[j][0] == front:
+			total_mp += intel[j][1]
+			j += 1
+		run_len = j - i
+		first_cost = intel[i][1]
 
-		# If insufficient resources, cooldown first
-		if mana < cost or stamina == 0:
-			time += COOLDOWN_TIME
-			mana = reserve
-			stamina = stamina_max
-			prev_front = None
+		# When switching fronts, decide whether to cooldown before retargeting
+		if prev_front != front:
+			must_cooldown_now = (mana < first_cost or stam == 0)
+			start_full_can_finish = (reserve >= total_mp and stamina >= run_len)
+			current_can_finish = (mana >= total_mp and stam >= run_len)
+			should_cooldown_first = must_cooldown_now or (start_full_can_finish and not current_can_finish)
+			if should_cooldown_first:
+				time += COOLDOWN_TIME
+				mana = reserve
+				stam = stamina
+			time += RETARGET_TIME
+			prev_front = front
 
-		# Cast spell
-		time += 0 if prev_front == front else RETARGET_TIME
-		mana -= cost
-		stamina -= 1
-		prev_front = front
+		# Process the run; cooldown mid-run if needed (costs +10 cooldown +10 retarget)
+		k = i
+		while k < j:
+			cost = intel[k][1]
+			if mana < cost or stam == 0:
+				time += COOLDOWN_TIME
+				mana = reserve
+				stam = stamina
+				time += RETARGET_TIME
+				prev_front = front
+			mana -= cost
+			stam -= 1
+			k += 1
 
-	# Final cooldown to be ready to depart
-	time += COOLDOWN_TIME
+		i = j
+
+	time += COOLDOWN_TIME  # final cooldown to depart immediately
 	return time
 
-@app.route('/the-mages-gambit', methods=['POST'])
-def the_mages_gambit():
-	# Be permissive with Content-Type and still honor expected JSON I/O
-	data = request.get_json(silent=True, force=True)
-	if data is None:
-		return jsonify({"error": "Invalid JSON"}), 400
+@app.route("/the-mages-gambit", methods=["POST"])
+def mages_gambit():
+	payload = request.get_json(silent=True)
+	if not isinstance(payload, list):
+		return jsonify({"error": "Expected array of test cases"}), 400
 
-	# Accept a single scenario object or an array of scenarios
-	if isinstance(data, dict):
-		return jsonify({"time": estimate_time_scenario(data)})
+	results = []
+	for tc in payload:
+		if not isinstance(tc, dict):
+			return jsonify({"error": "Each test case must be an object"}), 400
 
-	if isinstance(data, list):
-		results = []
-		for scn in data:
-			if not isinstance(scn, dict):
+		intel = tc.get("intel", [])
+		reserve = tc.get("reserve", 0)
+		stamina = tc.get("stamina", 0)
+
+		# Basic validation; assume well-formed inputs per problem spec
+		if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int):
+			return jsonify({"error": "Invalid input types"}), 400
+		if reserve < 0 or stamina < 0:
+			return jsonify({"error": "'reserve' and 'stamina' must be non-negative"}), 400
+
+		# Validate entries and also guard impossible groups (mp_cost > reserve)
+		clean = []
+		for atk in intel:
+			if not isinstance(atk, (list, tuple)) or len(atk) != 2:
+				return jsonify({"error": "Each intel entry must be [front, mp_cost]"}), 400
+			f, c = atk
+			if not isinstance(f, int) or not isinstance(c, int):
+				return jsonify({"error": "Front and MP cost must be integers"}), 400
+			if c < 0:
+				return jsonify({"error": "MP cost must be >= 0"}), 400
+			if c > reserve:
+				# impossible to cast a single spell for this group given reserve cap
 				results.append({"time": -1})
-				continue
-			results.append({"time": estimate_time_scenario(scn)})
-		return jsonify(results)
+				break
+			clean.append((f, c))
+		else:
+			results.append({"time": calculate_mage_combat_time(clean, reserve, stamina)})
 
-	return jsonify({"error": "Expected a JSON object or array"}), 400
+	return jsonify(results), 200
 
 
 def calculate_mage_combat_time(intel, reserve, stamina):
