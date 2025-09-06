@@ -1001,105 +1001,48 @@ def duolingo_sort():
     return jsonify({"sortedList": result})
 
 
-app.url_map.strict_slashes = False
-
-RETARGET_TIME = 10
-COOLDOWN_TIME = 10
-
-def calculate_mage_combat_time(intel, reserve, stamina):
-	time = 0
-	n = len(intel)
-	if n == 0:
-		return COOLDOWN_TIME  # must be in cooldown to be ready to depart
-
-	mana = reserve
-	stam = stamina
-	prev_front = None
-	i = 0
-
-	while i < n:
-		front = intel[i][0]
-		# compute maximal run of same front [i..j)
-		j = i
-		total_mp = 0
-		while j < n and intel[j][0] == front:
-			total_mp += intel[j][1]
-			j += 1
-		run_len = j - i
-		first_cost = intel[i][1]
-
-		# When switching fronts, decide whether to cooldown before retargeting
-		if prev_front != front:
-			must_cooldown_now = (mana < first_cost or stam == 0)
-			start_full_can_finish = (reserve >= total_mp and stamina >= run_len)
-			current_can_finish = (mana >= total_mp and stam >= run_len)
-			should_cooldown_first = must_cooldown_now or (start_full_can_finish and not current_can_finish)
-			if should_cooldown_first:
-				time += COOLDOWN_TIME
-				mana = reserve
-				stam = stamina
-			time += RETARGET_TIME
-			prev_front = front
-
-		# Process the run; cooldown mid-run if needed (costs +10 cooldown +10 retarget)
-		k = i
-		while k < j:
-			cost = intel[k][1]
-			if mana < cost or stam == 0:
-				time += COOLDOWN_TIME
-				mana = reserve
-				stam = stamina
-				time += RETARGET_TIME
-				prev_front = front
-			mana -= cost
-			stam -= 1
-			k += 1
-
-		i = j
-
-	time += COOLDOWN_TIME  # final cooldown to depart immediately
-	return time
-
 @app.route("/the-mages-gambit", methods=["POST"])
 def mages_gambit():
-	payload = request.get_json(silent=True)
-	if not isinstance(payload, list):
-		return jsonify({"error": "Expected array of test cases"}), 400
+    """
+    Calculate the minimum time Klein needs to defeat all undead and join the expedition.
 
-	results = []
-	for tc in payload:
-		if not isinstance(tc, dict):
-			return jsonify({"error": "Each test case must be an object"}), 400
+    Expected input format:
+    [
+        {
+            "intel": [[front, mp_cost], ...],
+            "reserve": int,
+            "fronts": int,
+            "stamina": int
+        },
+        ...
+    ]
 
-		intel = tc.get("intel", [])
-		reserve = tc.get("reserve", 0)
-		stamina = tc.get("stamina", 0)
+    Returns:
+    [
+        {"time": int},
+        ...
+    ]
+    """
+    try:
+        payload = request.get_json(silent=True)
 
-		# Basic validation; assume well-formed inputs per problem spec
-		if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int):
-			return jsonify({"error": "Invalid input types"}), 400
-		if reserve < 0 or stamina < 0:
-			return jsonify({"error": "'reserve' and 'stamina' must be non-negative"}), 400
+        results = []
 
-		# Validate entries and also guard impossible groups (mp_cost > reserve)
-		clean = []
-		for atk in intel:
-			if not isinstance(atk, (list, tuple)) or len(atk) != 2:
-				return jsonify({"error": "Each intel entry must be [front, mp_cost]"}), 400
-			f, c = atk
-			if not isinstance(f, int) or not isinstance(c, int):
-				return jsonify({"error": "Front and MP cost must be integers"}), 400
-			if c < 0:
-				return jsonify({"error": "MP cost must be >= 0"}), 400
-			if c > reserve:
-				# impossible to cast a single spell for this group given reserve cap
-				results.append({"time": -1})
-				break
-			clean.append((f, c))
-		else:
-			results.append({"time": calculate_mage_combat_time(clean, reserve, stamina)})
+        for test_case in payload:
 
-	return jsonify(results), 200
+            intel = test_case.get("intel", [])
+            reserve = test_case.get("reserve", 0)
+            fronts = test_case.get("fronts", 0)
+            stamina = test_case.get("stamina", 0)
+
+            # Calculate minimum time
+            min_time = calculate_mage_combat_time(intel, reserve, stamina)
+            results.append({"time": min_time})
+
+        return jsonify(results), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def calculate_mage_combat_time(intel, reserve, stamina):
