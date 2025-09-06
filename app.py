@@ -814,29 +814,61 @@ def calculate_mage_combat_time(intel, reserve, stamina):
     last_front = None
     last_action_was_cooldown = False
 
-    for front, mp_cost in intel:
-        # Check if we need cooldown before this attack
-        had_cooldown = False
-        if current_mp < mp_cost or current_stamina < 1:
-            # Force cooldown to recover resources
-            total_time += 10  # Cooldown takes 10 minutes
+    # Look ahead optimization: check if we can save time by pre-cooling before long same-front runs
+    i = 0
+    while i < len(intel):
+        front, mp_cost = intel[i]
+        
+        # Look ahead to find same-front run length and total MP cost
+        j = i
+        run_mp_sum = 0
+        run_length = 0
+        while j < len(intel) and intel[j][0] == front:
+            run_mp_sum += intel[j][1]
+            run_length += 1
+            j += 1
+        
+        # If this is a new front and we can't complete the run with current resources,
+        # consider pre-cooling to avoid mid-run cooldown + retarget penalty
+        if (last_front != front and 
+            (current_mp < run_mp_sum or current_stamina < run_length) and
+            (current_mp < reserve or current_stamina < stamina) and
+            run_length > 1):  # Only for multi-attack runs
+            
+            # Pre-cool to avoid mid-run retarget
+            total_time += 10
             current_mp = reserve
             current_stamina = stamina
-            had_cooldown = True
             last_action_was_cooldown = True
 
-        # Execute the attack
-        # If same front as last attack AND no cooldown happened, extend AOE (0 extra time)
-        if front == last_front and not had_cooldown:
-            spell_time = 0  # Extend AOE, no extra time
-        else:
-            spell_time = 10  # New target or after cooldown
+        # Process each attack in the run
+        for k in range(i, j):
+            front, mp_cost = intel[k]
+            
+            # Check if we need cooldown before this attack
+            had_cooldown = False
+            if current_mp < mp_cost or current_stamina < 1:
+                # Force cooldown to recover resources
+                total_time += 10  # Cooldown takes 10 minutes
+                current_mp = reserve
+                current_stamina = stamina
+                had_cooldown = True
+                last_action_was_cooldown = True
 
-        total_time += spell_time
-        current_mp -= mp_cost
-        current_stamina -= 1
-        last_front = front
-        last_action_was_cooldown = False
+            # Execute the attack
+            # If same front as last attack AND no cooldown happened, extend AOE (0 extra time)
+            if front == last_front and not had_cooldown:
+                spell_time = 0  # Extend AOE, no extra time
+            else:
+                spell_time = 10  # New target or after cooldown
+
+            total_time += spell_time
+            current_mp -= mp_cost
+            current_stamina -= 1
+            last_front = front
+            last_action_was_cooldown = False
+        
+        i = j
 
     # Must end with cooldown to be ready for expedition (unless already in cooldown)
     if not last_action_was_cooldown:
