@@ -1005,61 +1005,81 @@ RETARGET_TIME = 10
 COOLDOWN_TIME = 10
 
 def estimate_time_scenario(scn):
-	time = 0
-	intel = scn.get('intel', [])
+	# Basic extraction with defaults
+	intel = scn.get('intel', []) or []
 	reserve = scn.get('reserve', 0)
 	stamina_max = scn.get('stamina', 0)
 
-	for _, cost in intel:
+	# Edge cases
+	if not isinstance(intel, list):
+		return -1
+	if len(intel) == 0:
+		return 0
+	if stamina_max <= 0:
+		return -1
+	if reserve < 0:
+		return -1
+
+	# Validate and early impossibility checks
+	for entry in intel:
+		if (not isinstance(entry, (list, tuple))) or len(entry) != 2:
+			return -1
+		_, cost = entry
+		if not isinstance(cost, int):
+			return -1
+		if cost < 0:
+			return -1
 		if cost > reserve:
 			return -1
 
+	time = 0
 	mana = reserve
 	stamina = stamina_max
 	prev_front = None
-	last_action_was_cooldown = False
 
 	for front, cost in intel:
+		# Ensure types for front as well, but only for robustness
+		if not isinstance(front, int):
+			return -1
+
+		# If insufficient resources, cooldown first
 		if mana < cost or stamina == 0:
 			time += COOLDOWN_TIME
 			mana = reserve
 			stamina = stamina_max
 			prev_front = None
-			last_action_was_cooldown = True
 
+		# Cast spell
 		time += 0 if prev_front == front else RETARGET_TIME
 		mana -= cost
 		stamina -= 1
 		prev_front = front
-		last_action_was_cooldown = False
 
-	if not last_action_was_cooldown:
-		time += COOLDOWN_TIME
-
+	# Final cooldown to be ready to depart
+	time += COOLDOWN_TIME
 	return time
 
 @app.route('/the-mages-gambit', methods=['POST'])
 def the_mages_gambit():
-	if request.mimetype != 'application/json':
-		return jsonify({"error": "Unsupported Media Type, expected application/json"}), 415
-
-	try:
-		data = request.get_json()
-	except Exception:
+	# Be permissive with Content-Type and still honor expected JSON I/O
+	data = request.get_json(silent=True, force=True)
+	if data is None:
 		return jsonify({"error": "Invalid JSON"}), 400
 
-	if not isinstance(data, list):
-		return jsonify({"error": "Expected a JSON array of scenarios"}), 400
+	# Accept a single scenario object or an array of scenarios
+	if isinstance(data, dict):
+		return jsonify({"time": estimate_time_scenario(data)})
 
-	results = []
-	for scn in data:
-		if not isinstance(scn, dict):
-			results.append({"time": -1})
-			continue
-		time = estimate_time_scenario(scn)
-		results.append({"time": time})
+	if isinstance(data, list):
+		results = []
+		for scn in data:
+			if not isinstance(scn, dict):
+				results.append({"time": -1})
+				continue
+			results.append({"time": estimate_time_scenario(scn)})
+		return jsonify(results)
 
-	return jsonify(results)
+	return jsonify({"error": "Expected a JSON object or array"}), 400
 
 
 def calculate_mage_combat_time(intel, reserve, stamina):
