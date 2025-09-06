@@ -1492,7 +1492,7 @@ class MicroMouseSimulation:
         # Maze setup - 16x16 grid
         self.GRID_SIZE = 16
         self.CELL_SIZE = 16  # cm
-        self.GOAL_CELLS = [(7, 7), (7, 8), (8, 7), (8, 8)]  # 2x2 center block
+        self.GOAL_CENTER = (8.0, 8.0)  # Center of 2x2 goal area
         
         # Mouse setup
         self.MOUSE_SIZE = 8  # cm (8x8x8 cube)
@@ -1505,22 +1505,6 @@ class MicroMouseSimulation:
         
         # Game states storage
         self.games: Dict[str, Dict] = {}
-        
-        # Initialize basic maze (simplified for demo)
-        self.maze = self._create_demo_maze()
-    
-    def _create_demo_maze(self):
-        """Create a demo maze with known paths to goal"""
-        # For this demo, create a simple maze
-        # In practice, this would be loaded from maze configuration
-        maze = {}
-        
-        # Simple path: go north from start, then east to goal
-        maze['walls'] = set()  # Set of wall positions as ((x1,y1), (x2,y2)) tuples
-        
-        # Add some walls to make it interesting but keep a clear path
-        # This is a simplified representation
-        return maze
     
     def _get_game_state(self, game_uuid: str) -> Dict:
         """Get or create game state"""
@@ -1536,147 +1520,182 @@ class MicroMouseSimulation:
                 'best_time_ms': None,
                 'at_start_center': True,
                 'crashed': False,
-                'known_walls': set(),  # Walls discovered by sensors
-                'exploration_map': {},  # Visited cells and their properties
-                'strategy_state': 'exploring'  # 'exploring', 'returning', 'speed_run'
+                'exploration_map': set(),  # Visited cells
+                'strategy_state': 'seeking_goal',
+                'last_position': [0.5, 0.5],
+                'stuck_counter': 0,
+                'goal_attempts': 0
             }
         return self.games[game_uuid]
     
     def _is_in_goal_interior(self, position: List[float]) -> bool:
         """Check if position is in goal interior (2x2 center block)"""
         x, y = position
-        # Goal interior is between cells (7,7), (7,8), (8,7), (8,8)
+        # Goal interior is the 2x2 center area: cells (7,7), (7,8), (8,7), (8,8)
+        # Interior means between 7.0 and 9.0 in both x and y
         return 7.0 < x < 9.0 and 7.0 < y < 9.0
     
-    def _is_at_start_center(self, position: List[float], momentum: int) -> bool:
-        """Check if at start center with momentum 0"""
+    def _is_near_goal(self, position: List[float]) -> bool:
+        """Check if position is near the goal area"""
         x, y = position
-        return abs(x - 0.5) < 0.1 and abs(y - 0.5) < 0.1 and momentum == 0
+        goal_x, goal_y = self.GOAL_CENTER
+        distance = math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
+        return distance < 3.0  # Within 3 cells of goal
     
-    def _update_map_from_sensors(self, game_state: Dict, sensor_data: List[int]):
-        """Update known walls based on sensor readings"""
-        position = game_state['position']
-        direction = game_state['direction']
+    def _get_direction_to_goal(self, position: List[float], current_direction: int) -> int:
+        """Calculate the best direction to face toward the goal"""
+        current_x, current_y = position
+        goal_x, goal_y = self.GOAL_CENTER
         
-        # Sensor angles relative to mouse direction: -90°, -45°, 0°, 45°, 90°
-        sensor_angles = [-90, -45, 0, 45, 90]
+        # Calculate angle to goal
+        dx = goal_x - current_x
+        dy = goal_y - current_y
         
-        for i, sensor_reading in enumerate(sensor_data):
-            if sensor_reading == 1:  # Wall detected
-                sensor_angle = direction + sensor_angles[i]
-                # Calculate wall position (simplified)
-                wall_x = position[0] + 0.6 * math.cos(math.radians(sensor_angle))
-                wall_y = position[1] + 0.6 * math.sin(math.radians(sensor_angle))
-                game_state['known_walls'].add((int(wall_x), int(wall_y)))
+        if abs(dx) < 0.1 and abs(dy) < 0.1:
+            return current_direction  # Already at goal
+        
+        # Convert to angle
+        angle_to_goal = math.degrees(math.atan2(dy, dx))
+        angle_to_goal = int(angle_to_goal / 45) * 45  # Round to nearest 45°
+        angle_to_goal = angle_to_goal % 360
+        
+        return angle_to_goal
+    
+    def _calculate_turn_to_direction(self, current_direction: int, target_direction: int) -> List[str]:
+        """Calculate the turns needed to face target direction"""
+        current_direction = current_direction % 360
+        target_direction = target_direction % 360
+        
+        diff = (target_direction - current_direction) % 360
+        
+        if diff == 0:
+            return []  # Already facing correct direction
+        elif diff <= 180:
+            # Turn right
+            turns = int(diff / 45)
+            return ["R"] * turns
+        else:
+            # Turn left
+            turns = int((360 - diff) / 45)
+            return ["L"] * turns
+    
+    def _can_move_forward(self, sensor_data: List[int]) -> bool:
+        """Check if forward movement is safe based on sensors"""
+        return len(sensor_data) >= 3 and sensor_data[2] == 0  # Front sensor clear
+    
+    def _has_walls_on_sides(self, sensor_data: List[int]) -> Tuple[bool, bool]:
+        """Check if there are walls on left and right sides"""
+        left_wall = len(sensor_data) >= 1 and sensor_data[0] == 1
+        right_wall = len(sensor_data) >= 5 and sensor_data[4] == 1
+        return left_wall, right_wall
     
     def _calculate_next_instruction(self, game_state: Dict, sensor_data: List[int]) -> List[str]:
-        """Calculate the next instruction(s) based on current state and strategy"""
+        """Calculate the next instruction based on goal-seeking strategy"""
         
         position = game_state['position']
         momentum = game_state['momentum']
         direction = game_state['direction']
-        strategy = game_state['strategy_state']
         
-        # Update exploration map
-        self._update_map_from_sensors(game_state, sensor_data)
-        
-        # Simple strategy implementation
-        if strategy == 'exploring':
-            return self._exploration_strategy(game_state, sensor_data)
-        elif strategy == 'returning':
-            return self._return_to_start_strategy(game_state)
-        elif strategy == 'speed_run':
-            return self._speed_run_strategy(game_state)
-        else:
-            return ["F1"]  # Default: maintain momentum
-    
-    def _exploration_strategy(self, game_state: Dict, sensor_data: List[int]) -> List[str]:
-        """Basic wall-following exploration strategy"""
-        momentum = game_state['momentum']
-        
-        # Check if goal reached
-        if self._is_in_goal_interior(game_state['position']):
-            if momentum != 0:
-                return ["BB"]  # Brake to stop in goal
-            else:
-                game_state['strategy_state'] = 'returning'
-                return ["L", "L"]  # Turn around to head back
-        
-        # Simple right-wall following algorithm
-        # Priority: Right > Forward > Left > Backward
-        
-        # Sensor indices: 0=-90°(left), 1=-45°, 2=0°(front), 3=45°, 4=90°(right)
-        front_clear = sensor_data[2] == 0
-        right_clear = sensor_data[4] == 0
-        left_clear = sensor_data[0] == 0
-        
-        if right_clear:
-            # Turn right and move forward
-            if momentum == 0:
-                return ["R", "F2"]
-            else:
-                return ["BB"]  # Need to stop first
-        elif front_clear:
-            # Move forward
-            if momentum < 2:
-                return ["F2"]
-            else:
-                return ["F1"]
-        elif left_clear:
-            # Turn left
-            if momentum == 0:
-                return ["L", "F2"]
-            else:
-                return ["BB"]
-        else:
-            # Dead end - turn around
-            if momentum == 0:
-                return ["L", "L"]
-            else:
-                return ["BB"]
-    
-    def _return_to_start_strategy(self, game_state: Dict) -> List[str]:
-        """Strategy to return to start position"""
-        position = game_state['position']
-        
-        # Check if back at start
-        if self._is_at_start_center(position, game_state['momentum']):
-            game_state['strategy_state'] = 'speed_run'
-            return ["F2"]  # Start speed run
-        
-        # Simple return strategy - head towards (0.5, 0.5)
-        target_x, target_y = 0.5, 0.5
-        current_x, current_y = position
-        
-        # Determine direction to start
-        if current_x > target_x:
-            return ["L", "L", "F2"]  # Head west
-        elif current_y > target_y:
-            return ["L", "F2"]  # Head south
-        else:
-            return ["F2"]  # Continue current direction
-    
-    def _speed_run_strategy(self, game_state: Dict) -> List[str]:
-        """Fast run to goal using known path"""
-        position = game_state['position']
+        # Update exploration
+        cell_x, cell_y = int(position[0]), int(position[1])
+        game_state['exploration_map'].add((cell_x, cell_y))
         
         # Check if goal reached
         if self._is_in_goal_interior(position):
-            if game_state['momentum'] != 0:
-                return ["BB"]
+            if momentum != 0:
+                return ["BB"]  # Brake to stop in goal
             else:
-                return ["F0"]  # Stay stopped in goal
+                game_state['goal_reached'] = True
+                return ["F0"]  # Stay in goal - mission accomplished!
         
-        # Fast path to goal (simplified - in practice use A* with known walls)
-        target_x, target_y = 8.0, 8.0  # Goal center
+        # Goal-seeking strategy
+        return self._goal_seeking_strategy(game_state, sensor_data)
+    
+    def _goal_seeking_strategy(self, game_state: Dict, sensor_data: List[int]) -> List[str]:
+        """Navigate toward the goal using a simple but effective strategy"""
+        
+        position = game_state['position']
+        momentum = game_state['momentum']
+        direction = game_state['direction']
+        
         current_x, current_y = position
+        goal_x, goal_y = self.GOAL_CENTER
         
-        if current_x < target_x:
-            return ["F2"]  # Head east quickly
-        elif current_y < target_y:
-            return ["L", "F2"]  # Head north quickly
+        # If we have momentum and front is blocked, brake
+        if momentum > 0 and not self._can_move_forward(sensor_data):
+            return ["BB"]
+        
+        # If stopped, decide next move
+        if momentum == 0:
+            # Calculate desired direction to goal
+            target_direction = self._get_direction_to_goal(position, direction)
+            
+            # If we're facing the right direction and can move forward, go!
+            if direction == target_direction and self._can_move_forward(sensor_data):
+                return ["F2"]  # Accelerate toward goal
+            
+            # If we need to turn to face goal
+            elif direction != target_direction:
+                turns = self._calculate_turn_to_direction(direction, target_direction)
+                if turns:
+                    return [turns[0]]  # Return first turn
+            
+            # If facing goal but blocked, try alternative routes
+            if not self._can_move_forward(sensor_data):
+                # Try right first (right-hand rule)
+                right_direction = (direction + 90) % 360
+                if len(sensor_data) >= 5 and sensor_data[4] == 0:  # Right is clear
+                    return ["R"]
+                # Try left
+                elif len(sensor_data) >= 1 and sensor_data[0] == 0:  # Left is clear
+                    return ["L"]
+                # Turn around
+                else:
+                    return ["L", "L"]
+            
+            # Default: try to move forward
+            return ["F1"]
+        
+        # If moving forward and safe, continue or adjust speed
+        elif momentum > 0 and self._can_move_forward(sensor_data):
+            # Near goal - slow down for precision
+            if self._is_near_goal(position):
+                if momentum > 1:
+                    return ["F0"]  # Slow down
+                else:
+                    return ["F1"]  # Maintain slow speed
+            # Far from goal - speed up
+            else:
+                if momentum < 3:
+                    return ["F2"]  # Speed up
+                else:
+                    return ["F1"]  # Maintain speed
+        
+        # If moving but need to turn or stop
         else:
-            return ["F2"]  # Continue toward goal
+            return ["BB"]  # Brake for safety
+    
+    def _simple_pathfind(self, game_state: Dict, sensor_data: List[int]) -> List[str]:
+        """Simple pathfinding when goal-seeking gets stuck"""
+        
+        position = game_state['position']
+        momentum = game_state['momentum']
+        
+        # If stuck, try systematic exploration
+        if momentum == 0:
+            # Try each direction in order: North, East, South, West
+            preferred_directions = [0, 90, 180, 270]
+            current_direction = game_state['direction']
+            
+            for pref_dir in preferred_directions:
+                if pref_dir == current_direction and self._can_move_forward(sensor_data):
+                    return ["F1"]
+                
+            # Need to turn to try other directions
+            next_dir = (current_direction + 90) % 360
+            return ["R"]
+        
+        return ["BB"]
     
     def process_mouse_update(self, request_data: Dict) -> Dict:
         """Process mouse state update and return instructions"""
@@ -1714,27 +1733,44 @@ class MicroMouseSimulation:
                 "reason": "Time budget exceeded"
             }
         
-        # Get sensor data
+        # Get sensor data (default to no walls for open maze)
         sensor_data = request_data.get('sensor_data', [0, 0, 0, 0, 0])
         
-        # Calculate next instructions
-        instructions = self._calculate_next_instruction(game_state, sensor_data)
+        # Validate sensor data
+        if len(sensor_data) != 5:
+            return {"error": "sensor_data must contain exactly 5 values"}
         
-        # Add thinking time to total (50ms per request)
+        # Calculate instructions
+        try:
+            instructions = self._calculate_next_instruction(game_state, sensor_data)
+            
+            # Ensure we return single instruction for safety
+            if isinstance(instructions, list) and len(instructions) > 0:
+                instructions = [instructions[0]]
+            else:
+                instructions = ["F1"]  # Default safe move
+                
+        except Exception as e:
+            # Fallback to safe movement toward goal
+            if game_state['momentum'] > 0:
+                instructions = ["F1"]
+            else:
+                instructions = ["F2"]
+        
+        # Add thinking time
         game_state['total_time_ms'] += self.THINKING_TIME
         
-        # Check if we should end (goal reached multiple times or optimal solution found)
-        should_end = (
-            game_state['best_time_ms'] is not None and 
-            game_state['strategy_state'] == 'speed_run' and
-            game_state['goal_reached']
-        )
-        
-        if should_end:
+        # Check if goal was reached and we should end
+        if game_state['goal_reached'] and game_state['momentum'] == 0:
+            # Update best time if this is better
+            if game_state['best_time_ms'] is None or game_state['run_time_ms'] < game_state['best_time_ms']:
+                game_state['best_time_ms'] = game_state['run_time_ms']
+            
             score = self._calculate_score(game_state['total_time_ms'], game_state['best_time_ms'])
             return {
                 "instructions": [],
                 "end": True,
+                "success": True,
                 "final_score": score,
                 "best_time_ms": game_state['best_time_ms'],
                 "total_time_ms": game_state['total_time_ms']
@@ -1816,7 +1852,11 @@ def get_game_status(game_uuid: str):
         "best_time_ms": game_state['best_time_ms'],
         "current_score": score,
         "strategy_state": game_state['strategy_state'],
-        "crashed": game_state['crashed']
+        "crashed": game_state['crashed'],
+        "distance_to_goal": math.sqrt(
+            (game_state['position'][0] - 8.0)**2 + 
+            (game_state['position'][1] - 8.0)**2
+        )
     })
 
 @app.route('/new-game', methods=['POST'])
