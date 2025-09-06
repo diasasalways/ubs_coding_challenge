@@ -766,8 +766,8 @@ def mages_gambit():
             if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int) or not isinstance(fronts, int):
                 return jsonify({"error": "Invalid input types"}), 400
 
-            if reserve <= 0 or stamina <= 0 or fronts <= 0:
-                return jsonify({"error": "'reserve', 'stamina', and 'fronts' must be positive"}), 400
+            if reserve <= 0 or stamina <= 0:
+                return jsonify({"error": "'reserve' and 'stamina' must be positive"}), 400
 
             for attack in intel:
                 if not isinstance(attack, list) or len(attack) != 2:
@@ -775,7 +775,9 @@ def mages_gambit():
                 front, mp_cost = attack
                 if not isinstance(front, int) or not isinstance(mp_cost, int):
                     return jsonify({"error": "Front and MP cost must be integers"}), 400
-                if front < 1 or front > fronts:
+                if front < 1:
+                    return jsonify({"error": "Front must be >= 1"}), 400
+                if fronts > 0 and front > fronts:
                     return jsonify({"error": f"Front must be between 1 and {fronts}"}), 400
                 if mp_cost < 1 or mp_cost > reserve:
                     return jsonify({"error": f"MP cost must be between 1 and {reserve}"}), 400
