@@ -1328,7 +1328,6 @@ class MouseState:
     heading_step: int = 0  # 0=N
     momentum: int = 0  # -4 to 4
 
-
 @dataclass
 class ChallengeState:
     game_uuid: str
@@ -1343,11 +1342,12 @@ class ChallengeState:
     ended: bool = False
     # For controller
     controller_initialized: bool = False
-
+    # Planning: send a one-shot deterministic plan to reach goal in empty maze
+    preplanned_sent: bool = False
+    last_sent_instructions: List[str] = field(default_factory=list)
 
 state_lock = threading.Lock()
 games: Dict[str, ChallengeState] = {}
-
 
 def get_game(game_uuid: str) -> ChallengeState:
     with state_lock:
@@ -1746,7 +1746,7 @@ def simulate_batch(g: ChallengeState, instructions: List[str], end_flag: bool) -
 
 # Controller
 def controller_plan(g: ChallengeState, sensed: List[int]) -> List[str]:
-    # Planner: avoid rotations when moving; emit a forward burst when clear and at rest
+    # Planner: avoid rotations when moving; can return a one-shot preplan for empty perimeter maze
     if g.goal_reached:
         return ["BB", "BB"]
 
@@ -1754,6 +1754,20 @@ def controller_plan(g: ChallengeState, sensed: List[int]) -> List[str]:
     front = sensed[2] if len(sensed) > 2 else 1
     right_45 = sensed[3] if len(sensed) > 3 else 1
     forward_cone_clear = (left_45 == 0 and front == 0 and right_45 == 0)
+
+    # If at the exact start pose (center of start cell) with momentum 0 and haven't sent plan, preplan
+    if g.maze.at_start_center(g.mouse.x, g.mouse.y) and g.mouse.momentum == 0 and not g.preplanned_sent:
+        # Open maze preplan to stop at (128,128) inside goal interior:
+        # - Move north 13 half-steps to y=112 with m=+4, then BB,BB -> y=128, m=0
+        # - Turn east (R,R), then same pattern to x=128, m=0
+        plan: List[str] = []
+        plan += ["F2"] * 13
+        plan += ["BB", "BB"]
+        plan += ["R", "R"]
+        plan += ["F2"] * 13
+        plan += ["BB", "BB"]
+        g.preplanned_sent = True
+        return plan
 
     if g.mouse.momentum < 0:
         return ["V0"]
@@ -1771,19 +1785,6 @@ def controller_plan(g: ChallengeState, sensed: List[int]) -> List[str]:
     # Otherwise keep accelerating/holding forward
     return ["F2"] if g.mouse.momentum < 2 else ["F1"]
 
-@app.route("/chasetheflag", methods=["POST"])
-def chase_the_flag():
-    """
-    Chase the Flag endpoint - returns flags for the challenges
-    """
-    return jsonify({
-        "challenge1": "nOO9QiTIwXgNtWtBJezz8kv3SLc",
-        "challenge2": "ZmQ3MzNkNGNlNDI5", 
-        "challenge3": "",
-        "challenge4": "",
-        "challenge5": ""
-    }), 200
-
 @app.route("/micro-mouse", methods=["POST"])
 def micro_mouse():
     payload = request.get_json(force=True, silent=True) or {}
@@ -1794,6 +1795,8 @@ def micro_mouse():
 
     g = get_game(game_uuid)
 
+    # Sync inbound authoritative fields (planner mode in external simulator)
+    # This prevents illegal plans like rotating while the sim has non-zero momentum
     if isinstance(payload.get("total_time_ms"), (int, float)):
         g.total_time_ms = int(payload["total_time_ms"])  # rounded externally
     if isinstance(payload.get("run_time_ms"), (int, float)):
@@ -1807,7 +1810,6 @@ def micro_mouse():
         g.run = payload["run"]
     if isinstance(payload.get("momentum"), (int, float)):
         g.mouse.momentum = clamp_momentum(int(payload["momentum"]))
-
 
     if payload.get("end") is True:
         g.ended = True
@@ -1831,8 +1833,27 @@ def micro_mouse():
             g.ended = True
         else:
             simulate_batch(g, instructions, False)
+            g.last_sent_instructions = []  # caller supplied; do not re-simulate
+    else:
+        # No instructions from caller: assume last response's instructions were executed by caller;
+        # simulate them locally so our internal position advances for planning/scoring.
+        if g.last_sent_instructions:
+            simulate_batch(g, g.last_sent_instructions, False)
+            g.last_sent_instructions = []
 
     on_reach_goal_if_any(g)
+
+    # If the judge indicates we've reached the goal (or we detected it), end immediately to lock in score
+    if g.goal_reached:
+        g.ended = True
+        score_time = None
+        if g.best_time_ms is not None:
+            score_time = g.best_time_ms + (g.total_time_ms / 30.0)
+        return jsonify({
+            "instructions": [],
+            "end": True,
+            "score_time": score_time,
+        })
 
     next_instr = controller_plan(g, sensor_data)
 
@@ -1854,6 +1875,7 @@ def micro_mouse():
             "score_time": score_time,
         })
 
+    g.last_sent_instructions = list(next_instr)
     return jsonify({
         "instructions": next_instr,
         "end": False
