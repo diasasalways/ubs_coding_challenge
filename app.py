@@ -2342,6 +2342,12 @@ def synthesize_final(c1: str, c2: str, c3: str) -> str:
 
 @app.route('/operation-safeguard', methods=['POST'])
 def operation_safeguard():
+    def _safe_str(x: Any) -> str:
+        if isinstance(x, str):
+            return x
+        if x is None:
+            return ''
+        return str(x)
     data = request.get_json(force=True, silent=True) or {}
     # Challenge 1
     c1_input = data.get('challenge_one') or {}
@@ -2372,8 +2378,8 @@ def operation_safeguard():
         c4_value = ''
 
     return jsonify({
-        "challenge_one": c1_value,
-        "challenge_two": c2_value,
-        "challenge_three": c3_value,
-        "challenge_four": c4_value,
+        "challenge_one": _safe_str(c1_value),
+        "challenge_two": _safe_str(c2_value),
+        "challenge_three": _safe_str(c3_value),
+        "challenge_four": _safe_str(c4_value),
     })
