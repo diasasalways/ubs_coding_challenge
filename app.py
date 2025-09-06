@@ -333,16 +333,17 @@ def int_to_roman(value: int) -> str:
     return ''.join(result)
 
 def roman_to_int(token: str) -> Optional[int]:
-    if not re.fullmatch(r'[IVXLCDM]+', token):
+    tok = token.upper()
+    if not re.fullmatch(r'[IVXLCDM]+', tok):
         return None
     index = 0
     total = 0
-    while index < len(token):
-        if index + 1 < len(token) and token[index:index+2] in ROMAN_SUBTRACTIVES:
-            total += ROMAN_SUBTRACTIVES[token[index:index+2]]
+    while index < len(tok):
+        if index + 1 < len(tok) and tok[index:index+2] in ROMAN_SUBTRACTIVES:
+            total += ROMAN_SUBTRACTIVES[tok[index:index+2]]
             index += 2
         else:
-            value = ROMAN_SYMBOLS.get(token[index])
+            value = ROMAN_SYMBOLS.get(tok[index])
             if value is None:
                 return None
             total += value
@@ -350,7 +351,7 @@ def roman_to_int(token: str) -> Optional[int]:
     # Validate canonical form by re-encoding
     if total <= 0 or total >= 4000:
         return None
-    if int_to_roman(total) != token:
+    if int_to_roman(total) != tok:
         return None
     return total
 
@@ -396,8 +397,16 @@ EN_SCALES = {
 
 def english_to_int(token: str) -> Optional[int]:
     s = token.lower().strip()
+    s = s.replace(',', ' ')
     s = s.replace('-', ' ')
-    s = re.sub(r'\band\b', ' ', s)
+    # plural scales to singular
+    s = re.sub(r'\b(hundreds)\b', 'hundred', s)
+    s = re.sub(r'\b(thousands)\b', 'thousand', s)
+    s = re.sub(r'\b(millions)\b', 'million', s)
+    s = re.sub(r'\b(billions)\b', 'billion', s)
+    # articles and filler
+    s = re.sub(r'\b(and)\b', ' ', s)
+    s = re.sub(r'\b(a|an)\b', 'one', s)
     s = re.sub(r'\s+', ' ', s)
     if not s:
         return None
@@ -430,7 +439,8 @@ def english_to_int(token: str) -> Optional[int]:
 
 # German dictionaries
 DE_UNITS = {
-    'null': 0, 'eins': 1, 'ein': 1, 'zwei': 2, 'drei': 3, 'vier': 4,
+    'null': 0, 'eins': 1, 'ein': 1, 'eine': 1, 'einen': 1, 'einem': 1, 'einer': 1, 'eines': 1,
+    'zwei': 2, 'drei': 3, 'vier': 4,
     'fuenf': 5, 'fünf': 5, 'sechs': 6, 'sieben': 7, 'acht': 8, 'neun': 9,
     'zehn': 10, 'elf': 11, 'zwoelf': 12, 'zwölf': 12,
 }
@@ -446,11 +456,11 @@ DE_TENS = {
 
 def normalize_german(s: str) -> str:
     s = s.lower().strip()
-    s = s.replace('ß', 'ss')  # normalize to ss to ease matching
-    # keep both forms in dicts: we normalized tens, but we accept both
+    s = s.replace('ß', 'ss')
     return s
 
 def parse_german_below_thousand(s: str) -> Optional[int]:
+    s = s.replace(' ', '').replace('-', '')
     # Handle hundreds
     if 'hundert' in s:
         idx = s.find('hundert')
@@ -475,6 +485,7 @@ def parse_german_below_thousand(s: str) -> Optional[int]:
     return parse_german_below_hundred(s)
 
 def parse_german_below_hundred(s: str) -> Optional[int]:
+    s = s.replace(' ', '').replace('-', '')
     if not s:
         return 0
     # direct matches
@@ -506,8 +517,8 @@ def german_to_int(token: str) -> Optional[int]:
     for key in ['millionen', 'million']:
         if key in remainder:
             idx = remainder.find(key)
-            left = remainder[:idx]
-            remainder = remainder[idx + len(key):]
+            left = remainder[:idx].strip().replace('-', '')
+            remainder = remainder[idx + len(key):].strip()
             mult = 1 if left == '' else parse_german_below_thousand(left)
             if mult is None or mult == 0:
                 return None
@@ -517,8 +528,8 @@ def german_to_int(token: str) -> Optional[int]:
     for key in ['milliarden', 'milliarde']:
         if key in remainder:
             idx = remainder.find(key)
-            left = remainder[:idx]
-            remainder = remainder[idx + len(key):]
+            left = remainder[:idx].strip().replace('-', '')
+            remainder = remainder[idx + len(key):].strip()
             mult = 1 if left == '' else parse_german_below_thousand(left)
             if mult is None or mult == 0:
                 return None
@@ -527,8 +538,8 @@ def german_to_int(token: str) -> Optional[int]:
     # tausend
     if 'tausend' in remainder:
         idx = remainder.find('tausend')
-        left = remainder[:idx]
-        remainder = remainder[idx + len('tausend'):]
+        left = remainder[:idx].strip().replace('-', '')
+        remainder = remainder[idx + len('tausend'):].strip()
         mult = 1 if left == '' else parse_german_below_thousand(left)
         if mult is None or mult == 0:
             return None
@@ -649,10 +660,10 @@ def detect_language(token: str) -> Optional[str]:
     if zh is not None:
         return zh
     # Roman
-    if re.fullmatch(r'[IVXLCDM]+', t):
+    if re.fullmatch(r'[IVXLCDMivxlcdm]+', t):
         return LANG_ROMAN
     # Arabic numerals
-    if re.fullmatch(r'\d+', t):
+    if re.fullmatch(r'[0-9][0-9,._\s]*', t) and re.fullmatch(r'\d+', re.sub(r'[,._\s]', '', t)):
         return LANG_AR
     # English
     if english_to_int(t) is not None:
@@ -670,7 +681,8 @@ def parse_value_with_language(token: str) -> Tuple[Optional[int], Optional[str]]
         return roman_to_int(token), language
     if language == LANG_AR:
         try:
-            value = int(token)
+            normalized = re.sub(r'[,._\s]', '', token)
+            value = int(normalized)
             if value < 0:
                 return None, None
             return value, language
