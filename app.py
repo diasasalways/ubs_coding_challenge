@@ -42,8 +42,8 @@ def trivia():
             4,  # zhb "Filler 1": Where has UBS Global Coding Challenge been held before?
             3,  # zhb "Trading Formula": When comparing your answer to the correct answer, what precision level do you have to ensure your answer is precise to?
             3,  # zhb "Filler (Encore)": What are the Three Pillars of UBS?
-            4,  # chase the flag prefix
-            4  #"Snakes and Ladders Power Up!": Which is a definitive false statement for the earlier version inspiring this?
+            3,  # chase the flag prefix
+            4   #"zhb Snakes and Ladders Power Up!": Which is a definitive false statement for the earlier version inspiring this?
         ]
     }
     return jsonify(res), 200
