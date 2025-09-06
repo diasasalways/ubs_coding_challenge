@@ -1487,395 +1487,187 @@ def _calculate_no_final_cooldown(intel, reserve, stamina):
 def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
-class MicroMouseSimulation:
-    def __init__(self):
-        # Maze setup - 16x16 grid
-        self.GRID_SIZE = 16
-        self.CELL_SIZE = 16  # cm
-        self.GOAL_CENTER = (8.0, 8.0)  # Center of 2x2 goal area
-        
-        # Mouse setup
-        self.MOUSE_SIZE = 8  # cm (8x8x8 cube)
-        self.START_POS = (0.5, 0.5)  # bottom-left center
-        self.START_DIRECTION = 0  # North (0°)
-        
-        # Timing constants
-        self.THINKING_TIME = 50  # ms
-        self.TIME_BUDGET = 300000  # 300 seconds total
-        
-        # Game states storage
-        self.games: Dict[str, Dict] = {}
-    
-    def _get_game_state(self, game_uuid: str) -> Dict:
-        """Get or create game state"""
-        if game_uuid not in self.games:
-            self.games[game_uuid] = {
-                'position': [0.5, 0.5],  # Start at center of (0,0) cell
-                'direction': 0,  # 0=N, 45=NE, 90=E, etc.
-                'momentum': 0,
-                'total_time_ms': 0,
-                'run': 0,
-                'run_time_ms': 0,
-                'goal_reached': False,
-                'best_time_ms': None,
-                'at_start_center': True,
-                'crashed': False,
-                'exploration_map': set(),  # Visited cells
-                'strategy_state': 'seeking_goal',
-                'last_position': [0.5, 0.5],
-                'stuck_counter': 0,
-                'goal_attempts': 0
-            }
-        return self.games[game_uuid]
-    
-    def _is_in_goal_interior(self, position: List[float]) -> bool:
-        """Check if position is in goal interior (2x2 center block)"""
-        x, y = position
-        # Goal interior is the 2x2 center area: cells (7,7), (7,8), (8,7), (8,8)
-        # Interior means between 7.0 and 9.0 in both x and y
-        return 7.0 < x < 9.0 and 7.0 < y < 9.0
-    
-    def _is_near_goal(self, position: List[float]) -> bool:
-        """Check if position is near the goal area"""
-        x, y = position
-        goal_x, goal_y = self.GOAL_CENTER
-        distance = math.sqrt((x - goal_x)**2 + (y - goal_y)**2)
-        return distance < 3.0  # Within 3 cells of goal
-    
-    def _get_direction_to_goal(self, position: List[float], current_direction: int) -> int:
-        """Calculate the best direction to face toward the goal"""
-        current_x, current_y = position
-        goal_x, goal_y = self.GOAL_CENTER
-        
-        # Calculate angle to goal
-        dx = goal_x - current_x
-        dy = goal_y - current_y
-        
-        if abs(dx) < 0.1 and abs(dy) < 0.1:
-            return current_direction  # Already at goal
-        
-        # Convert to angle
-        angle_to_goal = math.degrees(math.atan2(dy, dx))
-        angle_to_goal = int(angle_to_goal / 45) * 45  # Round to nearest 45°
-        angle_to_goal = angle_to_goal % 360
-        
-        return angle_to_goal
-    
-    def _calculate_turn_to_direction(self, current_direction: int, target_direction: int) -> List[str]:
-        """Calculate the turns needed to face target direction"""
-        current_direction = current_direction % 360
-        target_direction = target_direction % 360
-        
-        diff = (target_direction - current_direction) % 360
-        
-        if diff == 0:
-            return []  # Already facing correct direction
-        elif diff <= 180:
-            # Turn right
-            turns = int(diff / 45)
-            return ["R"] * turns
-        else:
-            # Turn left
-            turns = int((360 - diff) / 45)
-            return ["L"] * turns
-    
-    def _can_move_forward(self, sensor_data: List[int]) -> bool:
-        """Check if forward movement is safe based on sensors"""
-        return len(sensor_data) >= 3 and sensor_data[2] == 0  # Front sensor clear
-    
-    def _has_walls_on_sides(self, sensor_data: List[int]) -> Tuple[bool, bool]:
-        """Check if there are walls on left and right sides"""
-        left_wall = len(sensor_data) >= 1 and sensor_data[0] == 1
-        right_wall = len(sensor_data) >= 5 and sensor_data[4] == 1
-        return left_wall, right_wall
-    
-    def _calculate_next_instruction(self, game_state: Dict, sensor_data: List[int]) -> List[str]:
-        """Calculate the next instruction based on goal-seeking strategy"""
-        
-        position = game_state['position']
-        momentum = game_state['momentum']
-        direction = game_state['direction']
-        
-        # Update exploration
-        cell_x, cell_y = int(position[0]), int(position[1])
-        game_state['exploration_map'].add((cell_x, cell_y))
-        
-        # Check if goal reached
-        if self._is_in_goal_interior(position):
-            if momentum != 0:
-                return ["BB"]  # Brake to stop in goal
-            else:
-                game_state['goal_reached'] = True
-                return ["F0"]  # Stay in goal - mission accomplished!
-        
-        # Goal-seeking strategy
-        return self._goal_seeking_strategy(game_state, sensor_data)
-    
-    def _goal_seeking_strategy(self, game_state: Dict, sensor_data: List[int]) -> List[str]:
-        """Navigate toward the goal using a simple but effective strategy"""
-        
-        position = game_state['position']
-        momentum = game_state['momentum']
-        direction = game_state['direction']
-        
-        current_x, current_y = position
-        goal_x, goal_y = self.GOAL_CENTER
-        
-        # If we have momentum and front is blocked, brake
-        if momentum > 0 and not self._can_move_forward(sensor_data):
-            return ["BB"]
-        
-        # If stopped, decide next move
-        if momentum == 0:
-            # Calculate desired direction to goal
-            target_direction = self._get_direction_to_goal(position, direction)
-            
-            # If we're facing the right direction and can move forward, go!
-            if direction == target_direction and self._can_move_forward(sensor_data):
-                return ["F2"]  # Accelerate toward goal
-            
-            # If we need to turn to face goal
-            elif direction != target_direction:
-                turns = self._calculate_turn_to_direction(direction, target_direction)
-                if turns:
-                    return [turns[0]]  # Return first turn
-            
-            # If facing goal but blocked, try alternative routes
-            if not self._can_move_forward(sensor_data):
-                # Try right first (right-hand rule)
-                right_direction = (direction + 90) % 360
-                if len(sensor_data) >= 5 and sensor_data[4] == 0:  # Right is clear
-                    return ["R"]
-                # Try left
-                elif len(sensor_data) >= 1 and sensor_data[0] == 0:  # Left is clear
-                    return ["L"]
-                # Turn around
-                else:
-                    return ["L", "L"]
-            
-            # Default: try to move forward
-            return ["F1"]
-        
-        # If moving forward and safe, continue or adjust speed
-        elif momentum > 0 and self._can_move_forward(sensor_data):
-            # Near goal - slow down for precision
-            if self._is_near_goal(position):
-                if momentum > 1:
-                    return ["F0"]  # Slow down
-                else:
-                    return ["F1"]  # Maintain slow speed
-            # Far from goal - speed up
-            else:
-                if momentum < 3:
-                    return ["F2"]  # Speed up
-                else:
-                    return ["F1"]  # Maintain speed
-        
-        # If moving but need to turn or stop
-        else:
-            return ["BB"]  # Brake for safety
-    
-    def _simple_pathfind(self, game_state: Dict, sensor_data: List[int]) -> List[str]:
-        """Simple pathfinding when goal-seeking gets stuck"""
-        
-        position = game_state['position']
-        momentum = game_state['momentum']
-        
-        # If stuck, try systematic exploration
-        if momentum == 0:
-            # Try each direction in order: North, East, South, West
-            preferred_directions = [0, 90, 180, 270]
-            current_direction = game_state['direction']
-            
-            for pref_dir in preferred_directions:
-                if pref_dir == current_direction and self._can_move_forward(sensor_data):
-                    return ["F1"]
-                
-            # Need to turn to try other directions
-            next_dir = (current_direction + 90) % 360
-            return ["R"]
-        
-        return ["BB"]
-    
-    def process_mouse_update(self, request_data: Dict) -> Dict:
-        """Process mouse state update and return instructions"""
-        
-        game_uuid = request_data.get('game_uuid')
-        if not game_uuid:
-            return {"error": "game_uuid is required"}
-        
-        # Get current game state
-        game_state = self._get_game_state(game_uuid)
-        
-        # Check for crashed state
-        if game_state['crashed']:
-            return {
-                "instructions": [],
-                "end": True,
-                "error": "Game already crashed"
-            }
-        
-        # Update game state from request
-        game_state.update({
-            'total_time_ms': request_data.get('total_time_ms', game_state['total_time_ms']),
-            'goal_reached': request_data.get('goal_reached', game_state['goal_reached']),
-            'best_time_ms': request_data.get('best_time_ms', game_state['best_time_ms']),
-            'run_time_ms': request_data.get('run_time_ms', game_state['run_time_ms']),
-            'run': request_data.get('run', game_state['run']),
-            'momentum': request_data.get('momentum', game_state['momentum'])
-        })
-        
-        # Check time budget
-        if game_state['total_time_ms'] >= self.TIME_BUDGET:
-            return {
-                "instructions": [],
-                "end": True,
-                "reason": "Time budget exceeded"
-            }
-        
-        # Get sensor data (default to no walls for open maze)
-        sensor_data = request_data.get('sensor_data', [0, 0, 0, 0, 0])
-        
-        # Validate sensor data
-        if len(sensor_data) != 5:
-            return {"error": "sensor_data must contain exactly 5 values"}
-        
-        # Calculate instructions
-        try:
-            instructions = self._calculate_next_instruction(game_state, sensor_data)
-            
-            # Ensure we return single instruction for safety
-            if isinstance(instructions, list) and len(instructions) > 0:
-                instructions = [instructions[0]]
-            else:
-                instructions = ["F1"]  # Default safe move
-                
-        except Exception as e:
-            # Fallback to safe movement toward goal
-            if game_state['momentum'] > 0:
-                instructions = ["F1"]
-            else:
-                instructions = ["F2"]
-        
-        # Add thinking time
-        game_state['total_time_ms'] += self.THINKING_TIME
-        
-        # Check if goal was reached and we should end
-        if game_state['goal_reached'] and game_state['momentum'] == 0:
-            # Update best time if this is better
-            if game_state['best_time_ms'] is None or game_state['run_time_ms'] < game_state['best_time_ms']:
-                game_state['best_time_ms'] = game_state['run_time_ms']
-            
-            score = self._calculate_score(game_state['total_time_ms'], game_state['best_time_ms'])
-            return {
-                "instructions": [],
-                "end": True,
-                "success": True,
-                "final_score": score,
-                "best_time_ms": game_state['best_time_ms'],
-                "total_time_ms": game_state['total_time_ms']
-            }
-        
-        return {
-            "instructions": instructions,
-            "end": False
-        }
-    
-    def _calculate_score(self, total_time_ms: int, best_time_ms: Optional[int]) -> Optional[float]:
-        """Calculate final score: score_time = 1/30 * total_time_ms + best_time_ms"""
-        if best_time_ms is None:
-            return None
-        return (1/30 * total_time_ms) + best_time_ms
-
-# Global simulation instance
-simulation = MicroMouseSimulation()
-
-@app.route('/micro-mouse', methods=['POST'])
-def micro_mouse():
-    """Main API endpoint for micro-mouse simulation"""
-    
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({"error": "No JSON data provided"}), 400
-        
-        # Handle end request
-        if data.get('end', False):
-            game_uuid = data.get('game_uuid')
-            if game_uuid and game_uuid in simulation.games:
-                game_state = simulation.games[game_uuid]
-                score = simulation._calculate_score(
-                    game_state['total_time_ms'], 
-                    game_state['best_time_ms']
-                )
-                return jsonify({
-                    "end": True,
-                    "final_score": score,
-                    "best_time_ms": game_state['best_time_ms'],
-                    "total_time_ms": game_state['total_time_ms']
-                })
-            return jsonify({"end": True})
-        
-        # Process mouse update and return instructions
-        result = simulation.process_mouse_update(data)
-        
-        if "error" in result:
-            return jsonify(result), 400
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        return jsonify({"error": f"Internal error: {str(e)}"}), 500
-
-@app.route('/game/<game_uuid>/status', methods=['GET'])
-def get_game_status(game_uuid: str):
-    """Get current game status"""
-    if game_uuid not in simulation.games:
-        return jsonify({"error": "Game not found"}), 404
-    
-    game_state = simulation.games[game_uuid]
-    score = simulation._calculate_score(
-        game_state['total_time_ms'], 
-        game_state['best_time_ms']
-    )
-    
-    return jsonify({
-        "game_uuid": game_uuid,
-        "position": game_state['position'],
-        "momentum": game_state['momentum'],
-        "direction": game_state['direction'],
-        "total_time_ms": game_state['total_time_ms'],
-        "run": game_state['run'],
-        "run_time_ms": game_state['run_time_ms'],
-        "goal_reached": game_state['goal_reached'],
-        "best_time_ms": game_state['best_time_ms'],
-        "current_score": score,
-        "strategy_state": game_state['strategy_state'],
-        "crashed": game_state['crashed'],
-        "distance_to_goal": math.sqrt(
-            (game_state['position'][0] - 8.0)**2 + 
-            (game_state['position'][1] - 8.0)**2
-        )
-    })
-
-@app.route('/new-game', methods=['POST'])
-def new_game():
-    """Create a new game"""
-    game_uuid = str(uuid.uuid4())
-    game_state = simulation._get_game_state(game_uuid)
-    
-    return jsonify({
-        "game_uuid": game_uuid,
-        "initial_state": {
-            "position": game_state['position'],
-            "momentum": game_state['momentum'],
-            "direction": game_state['direction']
-        }
-    })
-
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+GAME_STATE: Dict[str, Dict[str, Any]] = {}
+
+def parse_sensor_bool(v: Any) -> int:
+    try:
+        return 1 if int(v) != 0 else 0
+    except Exception:
+        return 1  # default to "blocked" if unknown to stay safe
+
+def sanitize_request(data: Dict[str, Any]) -> Tuple[str, List[int], int, bool, int, int, Any]:
+    game_uuid = data.get("game_uuid") or "default"
+    sensor_data_in = data.get("sensor_data", [1, 1, 1, 1, 1])
+    # Normalize to list of 5 ints (0/1). Unknowns treated as blocked for safety.
+    if not isinstance(sensor_data_in, list) or len(sensor_data_in) != 5:
+        sensor = [1, 1, 1, 1, 1]
+    else:
+        sensor = [parse_sensor_bool(x) for x in sensor_data_in]
+
+    total_time_ms = int(data.get("total_time_ms", 0))
+    goal_reached = bool(data.get("goal_reached", False))
+    best_time_ms = data.get("best_time_ms", None)
+    run_time_ms = int(data.get("run_time_ms", 0))
+    momentum = int(data.get("momentum", 0))
+
+    return game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms
+
+def wall_follower_step(sensor: List[int], momentum: int) -> List[str]:
+    """
+    Conservative, crash-averse navigator:
+    - Uses only safe tokens: F2 (accel forward), F0 (brake toward 0), L/R (in-place 45°).
+    - Moves one cell via pair ["F2","F0"] starting from momentum 0.
+    - Only turns in place at momentum 0.
+    - Uses left-hand rule with relative sensors: [-90, -45, 0, +45, +90].
+    - Assumes 1 = blocked within 12 cm; 0 = clear.
+    """
+    left_blocked = sensor[0] == 1
+    front_blocked = sensor[2] == 1
+    right_blocked = sensor[4] == 1
+
+    # If we have residual forward momentum, complete the forward step safely by braking to 0.
+    # This forms the safe two-token stride: F2 (0->1) then F0 (1->0).
+    if momentum > 1:
+        # Too fast; gently brake toward 0 only if front is clear (half-step forward required).
+        if not front_blocked:
+            return ["F0"]
+        # If front is blocked, safest action is to stop issuing commands (let the host decide).
+        # But to comply with "non-empty instructions" on the host side not applicable here,
+        # we choose a no-op at rest only when momentum==0; here we must preserve safety:
+        return ["F1"]  # hold; relies on host semantics to not translate at same momentum
+    if momentum == 1:
+        # Finish the stride to the next center. Since the inter-cell boundary was open when we
+        # started, this half-step forward is safe even if current front sensor now reads blocked.
+        return ["F0"]
+
+    # momentum == 0: choose next action by left-hand rule.
+    if not left_blocked:
+        # Turn 90° left in place (two 45° turns); requires momentum 0.
+        return ["L", "L"]
+    if not front_blocked:
+        # Advance one cell with a safe stride: accelerate then brake.
+        return ["F2", "F0"]
+    if not right_blocked:
+        # Turn 90° right in place.
+        return ["R", "R"]
+
+    # Dead end: turn around (180°) via four 45° turns.
+    return ["R", "R", "R", "R"]
+
+def should_end_challenge(goal_reached: bool, total_time_ms: int, best_time_ms: Any) -> bool:
+    # End immediately if goal is reached (to lock in score) or budget is exhausted.
+    if goal_reached:
+        return True
+    if total_time_ms >= 300000:
+        return True
+    return False
+
+@app.route("/micro-mouse", methods=["POST"])
+def micro_mouse():
+    try:
+        data = request.get_json(force=True, silent=False) or {}
+    except Exception:
+        # If the controller cannot parse input, respond with an "end" to avoid causing crashes upstream.
+        return jsonify({"instructions": [], "end": True})
+
+    game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms = sanitize_request(data)
+
+    # Initialize game slot if needed
+    if game_uuid not in GAME_STATE:
+        GAME_STATE[game_uuid] = {"initialized": True}
+
+    # If end-state conditions met, end immediately (no instructions to avoid any risk).
+    if should_end_challenge(goal_reached, total_time_ms, best_time_ms):
+        return jsonify({"instructions": [], "end": True})
+
+    # Validate momentum bounds to stay within legal range; if out of range, end to avoid illegal commands.
+    if momentum < -4 or momentum > 4:
+        return jsonify({"instructions": [], "end": True})
+
+    # Never issue reverse (V*) or moving/corner rotations; only safest subset to avoid all crash conditions.
+    # Also, avoid in-place turns unless momentum is exactly 0.
+    # Plan next instructions conservatively.
+    instructions = wall_follower_step(sensor, momentum)
+
+    # Final safety filter: ensure we didn't create illegal moves for current momentum
+    safe_instr: List[str] = []
+    m = momentum
+    for tok in instructions:
+        if tok in ("L", "R"):
+            if m != 0:
+                # Replace with a safe brake if possible; else end early
+                if m > 0 and sensor[2] == 0:
+                    safe_instr.append("F0")
+                    m -= 1
+                elif m < 0:
+                    # Avoid reverse braking without rear sensor; end early
+                    return jsonify({"instructions": [], "end": True})
+                else:
+                    # still not safe to turn; end
+                    return jsonify({"instructions": [], "end": True})
+            else:
+                safe_instr.append(tok)
+        elif tok == "F2":
+            if m < 0:
+                # Opposite-direction acceleration would crash; end instead
+                return jsonify({"instructions": [], "end": True})
+            # Only accelerate if front is clear
+            if sensor[2] == 0:
+                safe_instr.append("F2")
+                m = min(4, m + 1)
+            else:
+                # Blocked ahead: prefer to turn instead (momentum must be 0)
+                if m == 0:
+                    # fall back to right turn if possible; else end
+                    if sensor[4] == 0:
+                        safe_instr.extend(["R", "R"])
+                        m = 0
+                    elif sensor[0] == 0:
+                        safe_instr.extend(["L", "L"])
+                        m = 0
+                    else:
+                        return jsonify({"instructions": [], "end": True})
+                else:
+                    return jsonify({"instructions": [], "end": True})
+        elif tok == "F0":
+            # Braking toward 0; requires half-step forward if m>0; ensure front clear then allow.
+            if m > 0:
+                if sensor[2] == 0:
+                    safe_instr.append("F0")
+                    m = max(0, m - 1)
+                else:
+                    return jsonify({"instructions": [], "end": True})
+            elif m == 0:
+                # At rest, F0 is allowed but not needed; replace with a no-op turn plan instead.
+                # Use a tiny safe default to avoid empty array: rotate 90° if any side open, else end.
+                if sensor[0] == 0:
+                    safe_instr.extend(["L", "L"])
+                elif sensor[4] == 0:
+                    safe_instr.extend(["R", "R"])
+                elif sensor[2] == 0:
+                    # If front open, start stride
+                    safe_instr.extend(["F2", "F0"])
+                    m = 0
+                else:
+                    return jsonify({"instructions": [], "end": True})
+            else:
+                # m < 0 (reverse): avoid braking backward without rear sensor; end.
+                return jsonify({"instructions": [], "end": True})
+        elif tok == "F1":
+            # Hold: safest no-op; prefer at non-zero momentum when front is blocked; let host simulate timing
+            safe_instr.append("F1")
+        else:
+            # Unknown or disallowed token for this planner
+            return jsonify({"instructions": [], "end": True})
+
+    # Guarantee non-empty instructions in response unless we purposely ended.
+    if not safe_instr:
+        return jsonify({"instructions": [], "end": True})
+
+    return jsonify({"instructions": safe_instr, "end": False})
 
 
 # ==============================
