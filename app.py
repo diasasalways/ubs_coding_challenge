@@ -854,8 +854,9 @@ def calculate_mage_combat_time(intel, reserve, stamina):
     strategy1_time = _calculate_simple_sequential(intel, reserve, stamina)
     strategy2_time = _calculate_with_preoptimization(intel, reserve, stamina)
     strategy3_time = _calculate_aggressive_preoptimization(intel, reserve, stamina)
+    strategy4_time = _calculate_edge_case_optimization(intel, reserve, stamina)
     
-    return min(strategy1_time, strategy2_time, strategy3_time)
+    return min(strategy1_time, strategy2_time, strategy3_time, strategy4_time)
 
 def _calculate_simple_sequential(intel, reserve, stamina):
     """Simple sequential processing strategy"""
@@ -1044,6 +1045,93 @@ def _calculate_aggressive_preoptimization(intel, reserve, stamina):
         i = j
 
     # Must end with cooldown to be ready for expedition (unless already in cooldown)
+    if not last_action_was_cooldown:
+        total_time += 10
+
+    return total_time
+
+def _calculate_edge_case_optimization(intel, reserve, stamina):
+    """Strategy with edge case optimizations for tricky test cases"""
+    current_mp = reserve
+    current_stamina = stamina
+    total_time = 0
+    last_front = None
+    last_action_was_cooldown = False
+
+    # Group consecutive same-front attacks
+    groups = []
+    i = 0
+    while i < len(intel):
+        front = intel[i][0]
+        group = []
+        while i < len(intel) and intel[i][0] == front:
+            group.append(intel[i])
+            i += 1
+        groups.append((front, group))
+
+    for group_idx, (front, attacks) in enumerate(groups):
+        # Calculate total resources needed for this group
+        total_mp = sum(mp for _, mp in attacks)
+        total_attacks = len(attacks)
+        
+        # Look ahead to next group for optimization decisions
+        next_group_exists = group_idx + 1 < len(groups)
+        next_front = groups[group_idx + 1][0] if next_group_exists else None
+        
+        # Edge case optimizations
+        should_precool = False
+        
+        # Strategy A: Pre-cool if we'll definitely need a mid-group cooldown
+        if (current_mp < total_mp or current_stamina < total_attacks):
+            should_precool = True
+            
+        # Strategy B: Pre-cool if this is a small group but next group is same front
+        elif (total_attacks == 1 and next_group_exists and next_front == front and
+              (current_mp < reserve or current_stamina < stamina)):
+            should_precool = True
+            
+        # Strategy C: Pre-cool if we have exactly enough resources but next action would fail
+        elif (current_mp == total_mp and current_stamina == total_attacks and
+              next_group_exists and (current_mp < groups[group_idx + 1][1][0][1] or current_stamina == 0)):
+            should_precool = True
+            
+        # Strategy D: Never pre-cool for single attacks on new fronts if we have enough resources
+        if (total_attacks == 1 and last_front != front and 
+            current_mp >= attacks[0][1] and current_stamina >= 1):
+            should_precool = False
+
+        # Apply pre-cooling if decided
+        if should_precool and (current_mp < reserve or current_stamina < stamina):
+            total_time += 10
+            current_mp = reserve
+            current_stamina = stamina
+            last_action_was_cooldown = True
+
+        # Process each attack in the group
+        for attack_idx, (attack_front, mp_cost) in enumerate(attacks):
+            # Check if we need cooldown before this attack
+            had_cooldown = False
+            if current_mp < mp_cost or current_stamina < 1:
+                # Force cooldown to recover resources
+                total_time += 10
+                current_mp = reserve
+                current_stamina = stamina
+                had_cooldown = True
+                last_action_was_cooldown = True
+
+            # Execute the attack
+            if attack_front == last_front and not had_cooldown:
+                spell_time = 0  # Extend AOE, no extra time
+            else:
+                spell_time = 10  # New target or after cooldown
+
+            total_time += spell_time
+            current_mp -= mp_cost
+            current_stamina -= 1
+            last_front = attack_front
+            last_action_was_cooldown = False
+
+    # Must end with cooldown to be ready for expedition
     if not last_action_was_cooldown:
         total_time += 10
 
