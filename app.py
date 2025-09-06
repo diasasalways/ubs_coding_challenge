@@ -850,6 +850,52 @@ def calculate_mage_combat_time(intel, reserve, stamina):
     if not intel:
         return 0
 
+    # Try both strategies and return the minimum
+    strategy1_time = _calculate_simple_sequential(intel, reserve, stamina)
+    strategy2_time = _calculate_with_preoptimization(intel, reserve, stamina)
+    
+    return min(strategy1_time, strategy2_time)
+
+def _calculate_simple_sequential(intel, reserve, stamina):
+    """Simple sequential processing strategy"""
+    current_mp = reserve
+    current_stamina = stamina
+    total_time = 0
+    last_front = None
+    last_action_was_cooldown = False
+
+    for front, mp_cost in intel:
+        # Check if we need cooldown before this attack
+        had_cooldown = False
+        if current_mp < mp_cost or current_stamina < 1:
+            # Force cooldown to recover resources
+            total_time += 10  # Cooldown takes 10 minutes
+            current_mp = reserve
+            current_stamina = stamina
+            had_cooldown = True
+            last_action_was_cooldown = True
+
+        # Execute the attack
+        # If same front as last attack AND no cooldown happened, extend AOE (0 extra time)
+        if front == last_front and not had_cooldown:
+            spell_time = 0  # Extend AOE, no extra time
+        else:
+            spell_time = 10  # New target or after cooldown
+
+        total_time += spell_time
+        current_mp -= mp_cost
+        current_stamina -= 1
+        last_front = front
+        last_action_was_cooldown = False
+
+    # Must end with cooldown to be ready for expedition (unless already in cooldown)
+    if not last_action_was_cooldown:
+        total_time += 10
+
+    return total_time
+
+def _calculate_with_preoptimization(intel, reserve, stamina):
+    """Strategy with pre-cooling optimization"""
     current_mp = reserve
     current_stamina = stamina
     total_time = 0
