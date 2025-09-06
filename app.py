@@ -51,7 +51,7 @@ def trivia():
             2,  # zhb 18. "Duolingo Sorting": Which language is not in this question?
             2,  # zhb 19. "Sailing Club": What is the maximum number of individual bookings made at the sailing club (for any given dataset received)?
             1,  # zhb 20. "The Mage's Gambit": Which Tarot Card represents Klein Moretti in Lord of Mysteries?
-            1,  # check 21. "2048": How big is the largest grid in the 2048 challenge?
+            2,  # check 21. "2048": How big is the largest grid in the 2048 challenge?
             2,  # zhb 22. "Trading Bot": How many trades does the challenge require to execute?
             3,  # zhb 23. "Micro-Mouse": With zero momentum and the micro-mouse oriented along a cardinal axis (N, E, S, or W), how many legal move combinations are there?
             4,  # zhb 24. "Filler 3": In which of the following locations does UBS not have a branch office?
