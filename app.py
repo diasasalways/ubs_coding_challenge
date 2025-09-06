@@ -812,51 +812,34 @@ def calculate_mage_combat_time(intel, reserve, stamina):
     current_stamina = stamina
     total_time = 0
     last_front = None
+    last_action_was_cooldown = False
 
-    i = 0
-    n = len(intel)
-    while i < n:
-        front, _ = intel[i]
+    for front, mp_cost in intel:
+        # Check if we need cooldown before this attack
+        had_cooldown = False
+        if current_mp < mp_cost or current_stamina < 1:
+            # Force cooldown to recover resources
+            total_time += 10  # Cooldown takes 10 minutes
+            current_mp = reserve
+            current_stamina = stamina
+            had_cooldown = True
+            last_action_was_cooldown = True
 
-        # Compute maximal same-front run [i, j)
-        j = i
-        run_len = 0
-        run_mp_sum = 0
-        while j < n and intel[j][0] == front:
-            run_len += 1
-            run_mp_sum += intel[j][1]
-            j += 1
+        # Execute the attack
+        # If same front as last attack AND no cooldown happened, extend AOE (0 extra time)
+        if front == last_front and not had_cooldown:
+            spell_time = 0  # Extend AOE, no extra time
+        else:
+            spell_time = 10  # New target or after cooldown
 
-        # If switching to a new front, consider pre-cooldown to avoid mid-run re-targets
-        if last_front != front:
-            needs_pre_cool = (current_mp < run_mp_sum) or (current_stamina < run_len)
-            not_full = (current_mp < reserve) or (current_stamina < stamina)
-            if needs_pre_cool and not_full:
-                total_time += 10  # cooldown
-                current_mp = reserve
-                current_stamina = stamina
+        total_time += spell_time
+        current_mp -= mp_cost
+        current_stamina -= 1
+        last_front = front
+        last_action_was_cooldown = False
 
-            # Targeting the new front
-            total_time += 10
-            last_front = front
+    # Must end with cooldown to be ready for expedition (unless already in cooldown)
+    if not last_action_was_cooldown:
+        total_time += 10
 
-        # Process the run
-        k = i
-        while k < j:
-            _, mp_cost = intel[k]
-            if current_mp < mp_cost or current_stamina == 0:
-                # Cooldown mid-run, then re-target same front
-                total_time += 10  # cooldown
-                current_mp = reserve
-                current_stamina = stamina
-                total_time += 10  # retarget same front
-
-            current_mp -= mp_cost
-            current_stamina -= 1
-            k += 1
-
-        i = j
-
-    # Final cooldown required to be ready for expedition
-    total_time += 10
     return total_time
