@@ -564,76 +564,72 @@ CH_DIGITS = {
     '八': 8, '捌': 8,
     '九': 9, '玖': 9,
 }
-CH_SMALL_UNITS = {
+CH_UNIT_MAP = {
     '十': 10, '百': 100, '千': 1000,
+    '万': 10_000, '萬': 10_000,
+    '亿': 100_000_000, '億': 100_000_000,
+    '兆': 1_000_000_000_000,
 }
-CH_LARGE_UNITS = [
-    ('兆', 1_000_000_000_000),
-    ('億', 100_000_000), ('亿', 100_000_000),
-    ('萬', 10_000), ('万', 10_000),
-]
-
-def parse_chinese_small(segment: str) -> Optional[int]:
-    if not segment:
-        return 0
-    total = 0
-    num = 0
-    last_unit = 1
-    i = 0
-    # Handle cases like 十, 二十, 二十一, 三百零二, etc.
-    # We scan characters and apply units when seen.
-    while i < len(segment):
-        ch = segment[i]
-        if ch in CH_DIGITS:
-            num = CH_DIGITS[ch]
-            i += 1
-            # Look ahead for unit
-            if i < len(segment) and segment[i] in CH_SMALL_UNITS:
-                unit = CH_SMALL_UNITS[segment[i]]
-                total += (num if num != 0 else 1) * unit
-                num = 0
-                i += 1
-            else:
-                # Might be a trailing digit handled later
-                continue
-        elif ch in CH_SMALL_UNITS:
-            unit = CH_SMALL_UNITS[ch]
-            total += (num if num != 0 else 1) * unit
-            num = 0
-            i += 1
-        elif ch in ('零', '〇'):
-            # zero as placeholder
-            num = 0
-            i += 1
-        else:
-            return None
-    total += num
-    return total
 
 def chinese_to_int(token: str) -> Optional[int]:
     s = token.strip()
     if not is_cjk(s):
         return None
     total = 0
-    remainder = s
-    for unit_char, multiplier in CH_LARGE_UNITS:
-        if unit_char in remainder:
-            parts = remainder.split(unit_char)
-            if len(parts) > 2:
-                return None
-            left, remainder = parts[0], parts[1]
-            left_val = parse_chinese_small(left)
-            if left_val is None:
-                return None
-            if left_val == 0:
-                left_val = 1
-            total += left_val * multiplier
-    if remainder:
-        small = parse_chinese_small(remainder)
-        if small is None:
+    section = 0
+    temp = 0
+    last_unit_mag = 1
+    used_small_in_section = False
+    saw_zero_after_last_unit = False
+
+    for ch in s:
+        if ch in CH_DIGITS:
+            temp = CH_DIGITS[ch]
+            continue
+        if ch in ('零', '〇'):
+            temp = 0
+            saw_zero_after_last_unit = True
+            continue
+        unit = CH_UNIT_MAP.get(ch)
+        if unit is None:
             return None
-        total += small
-    return total
+        if unit < 10_000:  # small unit
+            if temp == 0:
+                temp = 1
+            section += temp * unit
+            temp = 0
+            last_unit_mag = unit
+            used_small_in_section = True
+            saw_zero_after_last_unit = False
+        else:  # large unit: 万, 亿, 兆
+            # Add any leftover temp as ones in the current section
+            if temp != 0:
+                section += temp
+                temp = 0
+            if section == 0:
+                section = 1
+            total += section * unit
+            section = 0
+            last_unit_mag = unit
+            used_small_in_section = False
+            saw_zero_after_last_unit = False
+
+    # End of string handling: implicit units
+    if temp != 0:
+        if used_small_in_section:
+            # If we used a small unit in this section, a trailing digit may imply the next lower unit
+            if last_unit_mag >= 100 and not saw_zero_after_last_unit:
+                section += temp * (last_unit_mag // 10)
+            else:
+                section += temp
+        else:
+            # No small unit in this section; if there was a previous big unit, scale by its /10
+            if last_unit_mag >= 10_000 and not saw_zero_after_last_unit:
+                section += temp * (last_unit_mag // 10)
+            else:
+                section += temp
+
+    return total + section
 
 LANG_ROMAN = 'roman'
 LANG_EN = 'english'
