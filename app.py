@@ -49,11 +49,11 @@ def trivia():
             1,  # zhb 16. "Fog-of-Wall": When you send a response to the challenge server, you need to specify an action type. How many possible action types are there?
             1,  # zhb 17. "Filler 2": What is the prize for winning this competition?
             2,  # zhb 18. "Duolingo Sorting": Which language is not in this question?
-            99,  # 19. "Sailing Club": What is the maximum number of individual bookings made at the sailing club (for any given dataset received)?
+            99, # 19. "Sailing Club": What is the maximum number of individual bookings made at the sailing club (for any given dataset received)?
             1,  # zhb 20. "The Mage's Gambit": Which Tarot Card represents Klein Moretti in Lord of Mysteries?
-            99,  # 21. "2048": How big is the largest grid in the 2048 challenge?
+            99, # 21. "2048": How big is the largest grid in the 2048 challenge?
             2,  # zhb 22. "Trading Bot": How many trades does the challenge require to execute?
-            99,  # 23. "Micro-Mouse": With zero momentum and the micro-mouse oriented along a cardinal axis (N, E, S, or W), how many legal move combinations are there?
+            2, # 23. "Micro-Mouse": With zero momentum and the micro-mouse oriented along a cardinal axis (N, E, S, or W), how many legal move combinations are there?
             4,  # check 24. "Filler 3": In which of the following locations does UBS not have a branch office?
             2,  # zhb 25. "Filler 4 (Last one)": What was UBS's total comprehensive income for Q2 2025 (in USD)?
         ]
