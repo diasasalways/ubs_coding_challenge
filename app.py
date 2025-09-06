@@ -4,7 +4,7 @@ from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
 from collections import defaultdict, deque, Counter
-import re, math, threading
+import re, math, threading, time
 from dataclasses import dataclass, field
 import xml.etree.ElementTree as ET
 
@@ -59,6 +59,252 @@ def bad_request(message: str):
     resp = make_response(jsonify({"error": message}), 400)
     resp.headers["Content-Type"] = "application/json"
     return resp
+
+# === FOG OF WALL - IMPROVED IMPLEMENTATION ===
+
+# Global state storage per (challenger_id, game_id)
+_fog_states: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+def _fog_in_bounds(x: int, y: int, n: int) -> bool:
+    """Check if coordinates are within grid bounds."""
+    return 0 <= x < n and 0 <= y < n
+
+def _fog_neighbors(x: int, y: int, n: int):
+    """Get valid neighboring cells with direction labels."""
+    directions = [("N", 0, -1), ("S", 0, 1), ("E", 1, 0), ("W", -1, 0)]
+    for direction, dx, dy in directions:
+        nx, ny = x + dx, y + dy
+        if _fog_in_bounds(nx, ny, n):
+            yield nx, ny, direction
+
+def _fog_count_unknowns_around(center: Tuple[int, int], n: int, known_cells: Set[Tuple[int, int]]) -> int:
+    """Count unknown cells in 5x5 area around center for scan evaluation."""
+    cx, cy = center
+    count = 0
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            x, y = cx + dx, cy + dy
+            if _fog_in_bounds(x, y, n) and (x, y) not in known_cells:
+                count += 1
+    return count
+
+def _fog_process_previous_action(state: Dict[str, Any], prev_action: Dict[str, Any]):
+    """Update state based on previous action results."""
+    if not prev_action:
+        return
+    
+    action = prev_action.get("your_action")
+    crow_id = prev_action.get("crow_id")
+    
+    if not crow_id or crow_id not in state["crows"]:
+        return
+    
+    if action == "move":
+        direction = prev_action.get("direction", "")
+        move_result = prev_action.get("move_result", [])
+        
+        if len(move_result) == 2:
+            old_x, old_y = state["crows"][crow_id]
+            new_x, new_y = int(move_result[0]), int(move_result[1])
+            
+            # Calculate intended destination
+            dir_map = {"N": (0, -1), "S": (0, 1), "E": (1, 0), "W": (-1, 0)}
+            dx, dy = dir_map.get(direction, (0, 0))
+            intended_x, intended_y = old_x + dx, old_y + dy
+            
+            # If position didn't change, we hit a wall
+            if (new_x, new_y) == (old_x, old_y):
+                if _fog_in_bounds(intended_x, intended_y, state["size"]):
+                    state["known_walls"].add((intended_x, intended_y))
+            else:
+                # Successful move - mark new position as empty
+                state["known_empty"].add((new_x, new_y))
+            
+            # Update crow position
+            state["crows"][crow_id] = (new_x, new_y)
+    
+    elif action == "scan":
+        scan_result = prev_action.get("scan_result", [])
+        if len(scan_result) == 5:
+            _fog_process_scan(state, crow_id, scan_result)
+    
+    # Increment action counter
+    state["actions"] = state.get("actions", 0) + 1
+
+def _fog_process_scan(state: Dict[str, Any], crow_id: str, scan_grid: List[List[str]]):
+    """Process scan results to update known walls and empty cells."""
+    cx, cy = state["crows"][crow_id]
+    
+    for r in range(5):
+        for c in range(5):
+            symbol = scan_grid[r][c]
+            x = cx + (c - 2)  # c-2 because center is at (2,2)
+            y = cy + (r - 2)  # r-2 because center is at (2,2)
+            
+            if not _fog_in_bounds(x, y, state["size"]):
+                continue
+            
+            if symbol == "W":
+                state["known_walls"].add((x, y))
+            elif symbol in ["*", "_", "C"]:  # Empty cells or crow
+                state["known_empty"].add((x, y))
+    
+    # Ensure crow's current position is marked as empty
+    state["known_empty"].add((cx, cy))
+    
+    # Track that we've scanned from this position
+    state["scanned_positions"].add((cx, cy))
+
+def _fog_choose_action(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Simplified decision making - much faster than old version."""
+    
+    # Check if we found all walls
+    if len(state["known_walls"]) >= state["total_walls"]:
+        walls_list = [f"{x}-{y}" for x, y in sorted(state["known_walls"])]
+        return {"action_type": "submit", "submission": walls_list}
+    
+    size = state["size"]
+    actions = state.get("actions", 0)
+    elapsed = time.time() - state["start_time"]
+    all_known = state["known_walls"] | state["known_empty"]
+    
+    # Aggressive mode: if we're running out of time or actions
+    urgent = elapsed > 20.0 or actions > size * size * 0.7
+    
+    # Simple round-robin crow selection for better coordination
+    crow_ids = sorted(state["crows"].keys())
+    current_crow_idx = actions % len(crow_ids)
+    active_crow = crow_ids[current_crow_idx]
+    crow_x, crow_y = state["crows"][active_crow]
+    
+    # Strategy 1: Scan if current position has many unknowns around
+    unknowns_here = _fog_count_unknowns_around((crow_x, crow_y), size, all_known)
+    scan_threshold = 3 if urgent else 8
+    
+    if unknowns_here >= scan_threshold and (crow_x, crow_y) not in state["scanned_positions"]:
+        return {"action_type": "scan", "crow_id": active_crow}
+    
+    # Strategy 2: Move towards unexplored areas (including unknown cells)
+    best_move = None
+    best_score = -1
+    
+    for nx, ny, direction in _fog_neighbors(crow_x, crow_y, size):
+        score = 0
+        
+        # Prefer unknown cells for exploration
+        if (nx, ny) not in all_known:
+            score += 20
+        # Avoid known walls
+        elif (nx, ny) in state["known_walls"]:
+            continue
+        # Known empty is okay but lower priority
+        else:
+            score += 1
+        
+        # Bonus for cells that would have good scan potential
+        if (nx, ny) not in state["scanned_positions"]:
+            future_unknowns = _fog_count_unknowns_around((nx, ny), size, all_known)
+            score += future_unknowns
+        
+        # Simple spatial separation for multiple crows
+        for other_crow, (ox, oy) in state["crows"].items():
+            if other_crow != active_crow:
+                dist = abs(nx - ox) + abs(ny - oy)  # Manhattan distance
+                if dist < 3:  # Too close
+                    score -= 5
+        
+        if score > best_score:
+            best_score = score
+            best_move = direction
+    
+    if best_move:
+        return {"action_type": "move", "crow_id": active_crow, "direction": best_move}
+    
+    # Strategy 3: Emergency scan if completely stuck
+    return {"action_type": "scan", "crow_id": active_crow}
+
+@app.route("/fog-of-wall", methods=["POST"])
+def fog_of_wall():
+    """Simplified Fog of Wall implementation focused on speed and efficiency."""
+    try:
+        data = request.get_json(silent=True) or {}
+        
+        challenger_id = str(data.get("challenger_id", ""))
+        game_id = str(data.get("game_id", ""))
+        
+        if not challenger_id or not game_id:
+            return bad_request("Missing challenger_id or game_id")
+        
+        key = (challenger_id, game_id)
+        
+        # Handle new test case initialization
+        test_case = data.get("test_case")
+        if test_case:
+            # Initialize new game state
+            size = int(test_case.get("length_of_grid", 0))
+            total_walls = int(test_case.get("num_of_walls", 0))
+            crows_data = test_case.get("crows", [])
+            
+            if size <= 0 or not crows_data:
+                return bad_request("Invalid test case data")
+            
+            state = {
+                "size": size,
+                "total_walls": total_walls,
+                "known_walls": set(),
+                "known_empty": set(),
+                "crows": {},
+                "scanned_positions": set(),
+                "start_time": time.time(),
+                "actions": 0
+            }
+            
+            # Initialize crow positions
+            for crow in crows_data:
+                crow_id = str(crow.get("id"))
+                x, y = int(crow.get("x", 0)), int(crow.get("y", 0))
+                state["crows"][crow_id] = (x, y)
+                # Mark starting positions as empty
+                state["known_empty"].add((x, y))
+            
+            _fog_states[key] = state
+        
+        else:
+            # Get existing state
+            if key not in _fog_states:
+                return bad_request("Game state not found - missing test_case in initial request")
+            state = _fog_states[key]
+        
+        # Process previous action results
+        prev_action = data.get("previous_action")
+        if prev_action:
+            _fog_process_previous_action(state, prev_action)
+        
+        # Decide next action
+        action = _fog_choose_action(state)
+        
+        # Build response
+        response = {
+            "challenger_id": challenger_id,
+            "game_id": game_id,
+            "action_type": action["action_type"]
+        }
+        
+        if action["action_type"] in ["move", "scan"]:
+            response["crow_id"] = action["crow_id"]
+        
+        if action["action_type"] == "move":
+            response["direction"] = action["direction"]
+        
+        if action["action_type"] == "submit":
+            response["submission"] = action["submission"]
+            # Clean up state after submission
+            _fog_states.pop(key, None)
+        
+        return jsonify(response)
+    
+    except Exception as e:
+        return bad_request(f"Internal error: {str(e)}")
 
 if __name__ == "__main__":
     # For local development only
