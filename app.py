@@ -6,11 +6,18 @@ from scipy import interpolate
 import numpy as np
 from collections import defaultdict, deque, Counter
 import re, math
+from dataclasses import dataclass
+import xml.etree.ElementTree as ET
 from math import log
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 app.json.sort_keys = False
+
+def bad_request(message: str):
+    resp = make_response(jsonify({"error": message}), 400)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
 
 if __name__ == "__main__":
     # For local development only
@@ -20,118 +27,69 @@ if __name__ == "__main__":
 @app.route("/")
 def root():
     return "OK", 200
+@app.route("/trivia", methods=["GET"])
+def trivia():
+    res = {
+        "answers": [
+            3,  # zhb "Trivia!": How many challenges are there this year, which title ends with an exclamation mark?
+            1,  # zhb "Ticketing Agent": What type of tickets is the ticketing agent handling?
+            2,  # zhb "Blankety Blanks": How many lists and elements per list are included in the dataset you must impute?
+            2,  # zhb "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?
+            3,  # zhb "MST Calculation": What is the average number of nodes in a test case?
+            4,  # zhb "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
+            3,  # "Operation Safeguard": What is the smallest font size in our question?
+            5,  # zhb "Capture The Flag": Which of these are anagrams of the challenge name?
+            4,  # zhb "Filler 1": Where has UBS Global Coding Challenge been held before?
+            3   # zhb "Trading Formula": When comparing your answer to the correct answer, what precision level do you have to ensure your answer is precise to?
+        ]
+    }
+    return jsonify(res), 200
 
-def build_edges(ratios):
-    edges = {}
-    adj = {}
-    for u, v, r in ratios:
-        u = int(u)
-        v = int(v)
-        r = float(r)
-        if r <= 0:
-            continue
-        edges[(u, v)] = r
-        adj.setdefault(u, []).append(v)
-    return edges, adj
 
-def cycle_gain_from_path(path, edges):
-    product = 1.0
-    L = len(path)
-    for i in range(L):
-        u = path[i]
-        v = path[(i + 1) % L]
-        r = edges.get((u, v))
-        if r is None or r <= 0:
-            return None
-        product *= r
-    return (product - 1.0) * 100.0
 
-def best_cycle_ch1(num_nodes, ratios):
-    # Restrict to 2- and 3-hop cycles only (matches expected sample)
-    edges, adj = build_edges(ratios)
+@app.route("/The-Ink-Archive", methods=["POST"]) 
+def the_ink_archive():
+    payload = request.get_json(silent=True)
+    if payload is None or not isinstance(payload, list) or len(payload) == 0:
+        return bad_request("Expected a JSON array with two items for Part I and Part II.")
 
-    best_gain = float('-inf')
-    best_path = []
+    results: List[Dict[str, Any]] = []
 
-    # 2-cycles: u -> v -> u
-    for (u, v), r_uv in edges.items():
-        r_vu = edges.get((v, u))
-        if r_vu is None:
-            continue
-        g = cycle_gain_from_path([u, v], edges)
-        if g is not None and g > best_gain and g > 0:
-            best_gain = g
-            best_path = [u, v]
+    # Part I: detect any profitable loop
+    part1 = payload[0] if len(payload) >= 1 else {}
+    goods1 = part1.get("goods", []) if isinstance(part1, dict) else []
+    rates1 = part1.get("rates", []) if isinstance(part1, dict) else []
+    n1, edges1, rate_map1 = _ink_build_graph(goods1 if isinstance(goods1, list) else [], rates1)
 
-    # 3-cycles: u -> v -> w -> u
-    for u in range(num_nodes):
-        for v in adj.get(u, []):
-            for w in adj.get(v, []):
-                if edges.get((w, u)) is None:
-                    continue
-                g = cycle_gain_from_path([u, v, w], edges)
-                if g is not None and g > best_gain and g > 0:
-                    best_gain = g
-                    best_path = [u, v, w]
+    if n1 > 0:
+        # For Part I, return the most profitable cycle as well (stable and aligns with samples)
+        best_cycle1, best_gain1 = _ink_max_gain_cycle(n1, edges1, rate_map1)
+        if best_cycle1:
+            can1 = _ink_canonicalize_cycle(best_cycle1)
+            path1_names = [goods1[i] for i in can1]
+            results.append({"path": path1_names, "gain": best_gain1})
+        else:
+            results.append({"path": [], "gain": 0.0})
+    else:
+        results.append({"path": [], "gain": 0.0})
 
-    if best_path:
-        return best_path, best_gain
-    return [], 0.0
+    # Part II: find the maximum gain cycle
+    part2 = payload[1] if len(payload) >= 2 else {}
+    goods2 = part2.get("goods", []) if isinstance(part2, dict) else []
+    rates2 = part2.get("rates", []) if isinstance(part2, dict) else []
+    n2, edges2, rate_map2 = _ink_build_graph(goods2 if isinstance(goods2, list) else [], rates2)
 
-def best_cycle_ch2(num_nodes, ratios):
-    # Find the maximum-gain triangle (sufficient for provided data)
-    edges, adj = build_edges(ratios)
+    if n2 > 0:
+        best_cycle2, best_gain2 = _ink_max_gain_cycle(n2, edges2, rate_map2)
+        if best_cycle2:
+            can2 = _ink_canonicalize_cycle(best_cycle2)
+            path2_names = [goods2[i] for i in can2]
+            results.append({"path": path2_names, "gain": best_gain2})
+        else:
+            results.append({"path": [], "gain": 0.0})
+    else:
+        results.append({"path": [], "gain": 0.0})
 
-    best_gain = float('-inf')
-    best_path = []
-
-    for u in range(num_nodes):
-        for v in adj.get(u, []):
-            for w in adj.get(v, []):
-                if edges.get((w, u)) is None:
-                    continue
-                g = cycle_gain_from_path([u, v, w], edges)
-                if g is not None and g > best_gain:
-                    best_gain = g
-                    best_path = [u, v, w]
-
-    if best_path:
-        return best_path, best_gain
-    return [], 0.0
-
-def format_path(nodes, goods):
-    if not nodes:
-        return []
-    names = [goods[i] for i in nodes]
-    names.append(goods[nodes[0]])
-    return names
-
-@app.route('/The-Ink-Archive', methods=['POST'])
-def ink_archive():
-    data = request.get_json(force=True)
-    if not isinstance(data, list) or len(data) != 2:
-        return jsonify({'error': 'Input must be a JSON array of length 2'}), 400
-
-    results = []
-
-    # Challenge 1: restrict to 2- and 3-hop cycles
-    c1 = data[0]
-    goods1 = c1['goods']
-    ratios1 = c1['ratios']
-    path1_nodes, gain1 = best_cycle_ch1(len(goods1), ratios1)
-    results.append({
-        'path': format_path(path1_nodes, goods1),
-        'gain': gain1
-    })
-
-    # Challenge 2: best triangle (max gain)
-    c2 = data[1]
-    goods2 = c2['goods']
-    ratios2 = c2['ratios']
-    path2_nodes, gain2 = best_cycle_ch2(len(goods2), ratios2)
-    results.append({
-        'path': format_path(path2_nodes, goods2),
-        'gain': gain2
-    })
-
-    return jsonify(results)
+    resp = make_response(jsonify(results), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
