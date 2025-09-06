@@ -808,11 +808,12 @@ def calculate_mage_combat_time(intel, reserve, stamina):
     if not intel:
         return 0
 
-    # Try both strategies and return the minimum
+    # Try all strategies and return the minimum
     strategy1_time = _calculate_simple_sequential(intel, reserve, stamina)
     strategy2_time = _calculate_with_preoptimization(intel, reserve, stamina)
+    strategy3_time = _calculate_aggressive_preoptimization(intel, reserve, stamina)
     
-    return min(strategy1_time, strategy2_time)
+    return min(strategy1_time, strategy2_time, strategy3_time)
 
 def _calculate_simple_sequential(intel, reserve, stamina):
     """Simple sequential processing strategy"""
@@ -882,6 +883,90 @@ def _calculate_with_preoptimization(intel, reserve, stamina):
             run_length > 1):  # Only for multi-attack runs
             
             # Pre-cool to avoid mid-run retarget
+            total_time += 10
+            current_mp = reserve
+            current_stamina = stamina
+            last_action_was_cooldown = True
+
+        # Process each attack in the run
+        for k in range(i, j):
+            front, mp_cost = intel[k]
+            
+            # Check if we need cooldown before this attack
+            had_cooldown = False
+            if current_mp < mp_cost or current_stamina < 1:
+                # Force cooldown to recover resources
+                total_time += 10  # Cooldown takes 10 minutes
+                current_mp = reserve
+                current_stamina = stamina
+                had_cooldown = True
+                last_action_was_cooldown = True
+
+            # Execute the attack
+            # If same front as last attack AND no cooldown happened, extend AOE (0 extra time)
+            if front == last_front and not had_cooldown:
+                spell_time = 0  # Extend AOE, no extra time
+            else:
+                spell_time = 10  # New target or after cooldown
+
+            total_time += spell_time
+            current_mp -= mp_cost
+            current_stamina -= 1
+            last_front = front
+            last_action_was_cooldown = False
+        
+        i = j
+
+    # Must end with cooldown to be ready for expedition (unless already in cooldown)
+    if not last_action_was_cooldown:
+        total_time += 10
+
+    return total_time
+
+def _calculate_aggressive_preoptimization(intel, reserve, stamina):
+    """Strategy with more aggressive pre-cooling - handles edge cases"""
+    current_mp = reserve
+    current_stamina = stamina
+    total_time = 0
+    last_front = None
+    last_action_was_cooldown = False
+
+    i = 0
+    while i < len(intel):
+        front, mp_cost = intel[i]
+        
+        # Look ahead to find same-front run length and total MP cost
+        j = i
+        run_mp_sum = 0
+        run_length = 0
+        while j < len(intel) and intel[j][0] == front:
+            run_mp_sum += intel[j][1]
+            run_length += 1
+            j += 1
+        
+        # More aggressive pre-cooling conditions
+        needs_precool = False
+        
+        # Case 1: New front and insufficient resources for the entire run
+        if (last_front != front and 
+            (current_mp < run_mp_sum or current_stamina < run_length) and
+            (current_mp < reserve or current_stamina < stamina)):
+            needs_precool = True
+            
+        # Case 2: Same front but we're very low on resources and have a long run ahead
+        elif (last_front == front and run_length > 2 and 
+              (current_mp < run_mp_sum or current_stamina < run_length) and
+              (current_mp <= reserve // 2 or current_stamina <= stamina // 2)):
+            needs_precool = True
+            
+        # Case 3: Single high-cost attack when we're not at full resources
+        elif (run_length == 1 and mp_cost >= reserve // 2 and 
+              (current_mp < mp_cost or current_stamina < 1) and
+              (current_mp < reserve or current_stamina < stamina)):
+            needs_precool = True
+
+        if needs_precool:
+            # Pre-cool to optimize
             total_time += 10
             current_mp = reserve
             current_stamina = stamina
