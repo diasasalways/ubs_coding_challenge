@@ -1496,16 +1496,15 @@ def parse_sensor_bool(v: Any) -> int:
     try:
         return 1 if int(v) != 0 else 0
     except Exception:
-        return 1  # default to "blocked" if unknown to stay safe
+        return 1  # default to "blocked" for safety
 
 def sanitize_request(data: Dict[str, Any]) -> Tuple[str, List[int], int, bool, int, int, Any]:
     game_uuid = data.get("game_uuid") or "default"
-    sensor_data_in = data.get("sensor_data", [1, 1, 1, 1, 1])
-    # Normalize to list of 5 ints (0/1). Unknowns treated as blocked for safety.
-    if not isinstance(sensor_data_in, list) or len(sensor_data_in) != 5:
+    sensor_in = data.get("sensor_data", [1, 1, 1, 1, 1])
+    if not isinstance(sensor_in, list) or len(sensor_in) != 5:
         sensor = [1, 1, 1, 1, 1]
     else:
-        sensor = [parse_sensor_bool(x) for x in sensor_data_in]
+        sensor = [parse_sensor_bool(x) for x in sensor_in]
 
     total_time_ms = int(data.get("total_time_ms", 0))
     goal_reached = bool(data.get("goal_reached", False))
@@ -1515,159 +1514,87 @@ def sanitize_request(data: Dict[str, Any]) -> Tuple[str, List[int], int, bool, i
 
     return game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms
 
-def wall_follower_step(sensor: List[int], momentum: int) -> List[str]:
-    """
-    Conservative, crash-averse navigator:
-    - Uses only safe tokens: F2 (accel forward), F0 (brake toward 0), L/R (in-place 45°).
-    - Moves one cell via pair ["F2","F0"] starting from momentum 0.
-    - Only turns in place at momentum 0.
-    - Uses left-hand rule with relative sensors: [-90, -45, 0, +45, +90].
-    - Assumes 1 = blocked within 12 cm; 0 = clear.
-    """
-    left_blocked = sensor[0] == 1
-    front_blocked = sensor[2] == 1
-    right_blocked = sensor[4] == 1
-
-    # If we have residual forward momentum, complete the forward step safely by braking to 0.
-    # This forms the safe two-token stride: F2 (0->1) then F0 (1->0).
-    if momentum > 1:
-        # Too fast; gently brake toward 0 only if front is clear (half-step forward required).
-        if not front_blocked:
-            return ["F0"]
-        # If front is blocked, safest action is to stop issuing commands (let the host decide).
-        # But to comply with "non-empty instructions" on the host side not applicable here,
-        # we choose a no-op at rest only when momentum==0; here we must preserve safety:
-        return ["F1"]  # hold; relies on host semantics to not translate at same momentum
-    if momentum == 1:
-        # Finish the stride to the next center. Since the inter-cell boundary was open when we
-        # started, this half-step forward is safe even if current front sensor now reads blocked.
-        return ["F0"]
-
-    # momentum == 0: choose next action by left-hand rule.
-    if not left_blocked:
-        # Turn 90° left in place (two 45° turns); requires momentum 0.
-        return ["L", "L"]
-    if not front_blocked:
-        # Advance one cell with a safe stride: accelerate then brake.
-        return ["F2", "F0"]
-    if not right_blocked:
-        # Turn 90° right in place.
-        return ["R", "R"]
-
-    # Dead end: turn around (180°) via four 45° turns.
-    return ["R", "R", "R", "R"]
-
-def should_end_challenge(goal_reached: bool, total_time_ms: int, best_time_ms: Any) -> bool:
-    # End immediately if goal is reached (to lock in score) or budget is exhausted.
+def should_end_challenge(goal_reached: bool, total_time_ms: int) -> bool:
     if goal_reached:
         return True
     if total_time_ms >= 300000:
         return True
     return False
 
+def pick_actions(sensor: List[int], momentum: int) -> List[str]:
+    """
+    Left-hand strategy with strict crash-avoidance.
+    sensor: [-90, -45, 0, +45, +90], 1=blocked, 0=clear within 12 cm.
+    Only uses: F2, F0, L, R
+    """
+    left_blocked = sensor[0] == 1
+    front_blocked = sensor[2] == 1
+    right_blocked = sensor[4] == 1
+
+    # If we somehow have reverse momentum, do not attempt any V*; safest is to end.
+    if momentum < 0:
+        return []
+
+    # While moving forward, never "hold"; always brake to zero as soon as practical.
+    if momentum > 1:
+        # Must brake with F0 (half-step forward). Only legal if front is clear.
+        if not front_blocked:
+            return ["F0"]
+        # Unsafe to brake into a wall and can't turn while moving -> no safe move.
+        return []
+
+    if momentum == 1:
+        # Finish braking to stop at next center. Legal only if front is clear.
+        if not front_blocked:
+            return ["F0"]
+        # Unsafe to brake into a wall and can't turn while moving -> no safe move.
+        return []
+
+    # momentum == 0: Choose next maneuver using left-hand preference.
+    # In-place turns at rest are always legal; moving only if front clear.
+    if not left_blocked:
+        return ["L", "L"]  # 90° CCW
+    if not front_blocked:
+        return ["F2", "F0"]  # one cell forward via two half-steps
+    if not right_blocked:
+        return ["R", "R"]  # 90° CW
+
+    # Dead end: turn around
+    return ["R", "R", "R", "R"]
+
 @app.route("/micro-mouse", methods=["POST"])
 def micro_mouse():
     try:
         data = request.get_json(force=True, silent=False) or {}
     except Exception:
-        # If the controller cannot parse input, respond with an "end" to avoid causing crashes upstream.
+        # On malformed input from evaluator, request end to avoid a crash
         return jsonify({"instructions": [], "end": True})
 
     game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms = sanitize_request(data)
 
-    # Initialize game slot if needed
     if game_uuid not in GAME_STATE:
         GAME_STATE[game_uuid] = {"initialized": True}
 
-    # If end-state conditions met, end immediately (no instructions to avoid any risk).
-    if should_end_challenge(goal_reached, total_time_ms, best_time_ms):
+    # End immediately if the evaluator signals goal or budget exhausted
+    if should_end_challenge(goal_reached, total_time_ms):
         return jsonify({"instructions": [], "end": True})
 
-    # Validate momentum bounds to stay within legal range; if out of range, end to avoid illegal commands.
+    # Momentum bounds check
     if momentum < -4 or momentum > 4:
         return jsonify({"instructions": [], "end": True})
 
-    # Never issue reverse (V*) or moving/corner rotations; only safest subset to avoid all crash conditions.
-    # Also, avoid in-place turns unless momentum is exactly 0.
-    # Plan next instructions conservatively.
-    instructions = wall_follower_step(sensor, momentum)
+    instr = pick_actions(sensor, momentum)
 
-    # Final safety filter: ensure we didn't create illegal moves for current momentum
-    safe_instr: List[str] = []
-    m = momentum
-    for tok in instructions:
-        if tok in ("L", "R"):
-            if m != 0:
-                # Replace with a safe brake if possible; else end early
-                if m > 0 and sensor[2] == 0:
-                    safe_instr.append("F0")
-                    m -= 1
-                elif m < 0:
-                    # Avoid reverse braking without rear sensor; end early
-                    return jsonify({"instructions": [], "end": True})
-                else:
-                    # still not safe to turn; end
-                    return jsonify({"instructions": [], "end": True})
-            else:
-                safe_instr.append(tok)
-        elif tok == "F2":
-            if m < 0:
-                # Opposite-direction acceleration would crash; end instead
-                return jsonify({"instructions": [], "end": True})
-            # Only accelerate if front is clear
-            if sensor[2] == 0:
-                safe_instr.append("F2")
-                m = min(4, m + 1)
-            else:
-                # Blocked ahead: prefer to turn instead (momentum must be 0)
-                if m == 0:
-                    # fall back to right turn if possible; else end
-                    if sensor[4] == 0:
-                        safe_instr.extend(["R", "R"])
-                        m = 0
-                    elif sensor[0] == 0:
-                        safe_instr.extend(["L", "L"])
-                        m = 0
-                    else:
-                        return jsonify({"instructions": [], "end": True})
-                else:
-                    return jsonify({"instructions": [], "end": True})
-        elif tok == "F0":
-            # Braking toward 0; requires half-step forward if m>0; ensure front clear then allow.
-            if m > 0:
-                if sensor[2] == 0:
-                    safe_instr.append("F0")
-                    m = max(0, m - 1)
-                else:
-                    return jsonify({"instructions": [], "end": True})
-            elif m == 0:
-                # At rest, F0 is allowed but not needed; replace with a no-op turn plan instead.
-                # Use a tiny safe default to avoid empty array: rotate 90° if any side open, else end.
-                if sensor[0] == 0:
-                    safe_instr.extend(["L", "L"])
-                elif sensor[4] == 0:
-                    safe_instr.extend(["R", "R"])
-                elif sensor[2] == 0:
-                    # If front open, start stride
-                    safe_instr.extend(["F2", "F0"])
-                    m = 0
-                else:
-                    return jsonify({"instructions": [], "end": True})
-            else:
-                # m < 0 (reverse): avoid braking backward without rear sensor; end.
-                return jsonify({"instructions": [], "end": True})
-        elif tok == "F1":
-            # Hold: safest no-op; prefer at non-zero momentum when front is blocked; let host simulate timing
-            safe_instr.append("F1")
-        else:
-            # Unknown or disallowed token for this planner
-            return jsonify({"instructions": [], "end": True})
-
-    # Guarantee non-empty instructions in response unless we purposely ended.
-    if not safe_instr:
+    # Safety net: if the chosen plan is empty (unsafe to proceed), end to avoid a crash.
+    if not instr:
         return jsonify({"instructions": [], "end": True})
 
-    return jsonify({"instructions": safe_instr, "end": False})
+    # Final assert: never emit F1 or any V*/corner/moving-rotation tokens
+    for t in instr:
+        if t not in ("F2", "F0", "L", "R"):
+            return jsonify({"instructions": [], "end": True})
+
+    return jsonify({"instructions": instr, "end": False})
 
 
 # ==============================
