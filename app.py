@@ -804,9 +804,9 @@ def calculate_mage_combat_time(intel, reserve, stamina):
     Returns:
         int: Minimum time in minutes
     """
-    # Must end in cooldown even if there are no attacks
+    # Empty intel: no actions needed; earliest time is 0
     if not intel:
-        return 10
+        return 0
 
     current_mp = reserve
     current_stamina = stamina
