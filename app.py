@@ -1656,6 +1656,19 @@ def controller_plan(g: ChallengeState, sensed: List[int]) -> List[str]:
     # Otherwise keep accelerating/holding forward
     return ["F2"] if g.mouse.momentum < 2 else ["F1"]
 
+@app.route("/chasetheflag", methods=["POST"])
+def chase_the_flag():
+    """
+    Chase the Flag endpoint - returns flags for the challenges
+    """
+    return jsonify({
+        "challenge1": "nOO9QiTIwXgNtWtBJezz8kv3SLc",
+        "challenge2": "ZmQ3MzNkNGNlNDI5", 
+        "challenge3": "",
+        "challenge4": "",
+        "challenge5": ""
+    }), 200
+
 @app.route("/micro-mouse", methods=["POST"])
 def micro_mouse():
     payload = request.get_json(force=True, silent=True) or {}
