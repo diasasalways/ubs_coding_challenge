@@ -1493,108 +1493,121 @@ if __name__ == '__main__':
 GAME_STATE: Dict[str, Dict[str, Any]] = {}
 
 def parse_sensor_bool(v: Any) -> int:
-    try:
-        return 1 if int(v) != 0 else 0
-    except Exception:
-        return 1  # default to "blocked" for safety
+  try:
+    return 1 if int(v) != 0 else 0
+  except Exception:
+    return 1  # default "blocked" for safety
 
-def sanitize_request(data: Dict[str, Any]) -> Tuple[str, List[int], int, bool, int, int, Any]:
-    game_uuid = data.get("game_uuid") or "default"
-    sensor_in = data.get("sensor_data", [1, 1, 1, 1, 1])
-    if not isinstance(sensor_in, list) or len(sensor_in) != 5:
-        sensor = [1, 1, 1, 1, 1]
-    else:
-        sensor = [parse_sensor_bool(x) for x in sensor_in]
+def sanitize_request(data: Dict[str, Any]) -> Tuple[str, List[int], int, bool, int, int, Any, int]:
+  game_uuid = data.get("game_uuid") or "default"
+  sensor_in = data.get("sensor_data", [1,1,1,1,1])
+  if not isinstance(sensor_in, list) or len(sensor_in) != 5:
+    sensor = [1,1,1,1,1]
+  else:
+    sensor = [parse_sensor_bool(x) for x in sensor_in]
 
-    total_time_ms = int(data.get("total_time_ms", 0))
-    goal_reached = bool(data.get("goal_reached", False))
-    best_time_ms = data.get("best_time_ms", None)
-    run_time_ms = int(data.get("run_time_ms", 0))
-    momentum = int(data.get("momentum", 0))
+  total_time_ms = int(data.get("total_time_ms", 0))
+  goal_reached = bool(data.get("goal_reached", False))
+  best_time_ms = data.get("best_time_ms", None)
+  run_time_ms = int(data.get("run_time_ms", 0))
+  momentum = int(data.get("momentum", 0))
+  run = int(data.get("run", 0))
 
-    return game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms
+  return game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms, run
 
-def should_end_challenge(goal_reached: bool, total_time_ms: int) -> bool:
-    if goal_reached:
-        return True
-    if total_time_ms >= 300000:
-        return True
-    return False
+def should_end(goal_reached: bool, total_time_ms: int) -> bool:
+  if goal_reached: return True
+  if total_time_ms >= 300000: return True
+  return False
 
-def pick_actions(sensor: List[int], momentum: int) -> List[str]:
-    """
-    Left-hand strategy with strict crash-avoidance.
-    sensor: [-90, -45, 0, +45, +90], 1=blocked, 0=clear within 12 cm.
-    Only uses: F2, F0, L, R
-    """
-    left_blocked = sensor[0] == 1
-    front_blocked = sensor[2] == 1
-    right_blocked = sensor[4] == 1
+def corner_left_possible(sensor: List[int]) -> bool:
+  # Need both left edge (-90°) and left-front (-45°) clear
+  return sensor[0] == 0 and sensor[1] == 0
 
-    # If we somehow have reverse momentum, do not attempt any V*; safest is to end.
-    if momentum < 0:
-        return []
+def corner_right_possible(sensor: List[int]) -> bool:
+  # Need both right edge (+90°) and right-front (+45°) clear
+  return sensor[4] == 0 and sensor[3] == 0
 
-    # While moving forward, never "hold"; always brake to zero as soon as practical.
-    if momentum > 1:
-        # Must brake with F0 (half-step forward). Only legal if front is clear.
-        if not front_blocked:
-            return ["F0"]
-        # Unsafe to brake into a wall and can't turn while moving -> no safe move.
-        return []
+def front_clear(sensor: List[int]) -> bool:
+  return sensor[2] == 0
 
-    if momentum == 1:
-        # Finish braking to stop at next center. Legal only if front is clear.
-        if not front_blocked:
-            return ["F0"]
-        # Unsafe to brake into a wall and can't turn while moving -> no safe move.
-        return []
+def plan_instructions(sensor: List[int], momentum: int) -> List[str]:
+  """
+  Policy:
+  - Prefer left corner if available (tight, with decel: F0LT).
+  - Else go straight if clear: F2 from rest, F1 when moving (m>0).
+  - Else right corner if available: F0RT.
+  - Else dead end:
+    - If m==0: turn around in place (R x4).
+    - If m>0: no safe legal action (avoid issuing anything).
+  """
+  left_ok = corner_left_possible(sensor)
+  right_ok = corner_right_possible(sensor)
+  fwd_ok = front_clear(sensor)
 
-    # momentum == 0: Choose next maneuver using left-hand preference.
-    # In-place turns at rest are always legal; moving only if front clear.
-    if not left_blocked:
-        return ["L", "L"]  # 90° CCW
-    if not front_blocked:
-        return ["F2", "F0"]  # one cell forward via two half-steps
-    if not right_blocked:
-        return ["R", "R"]  # 90° CW
+  # Reverse momentum not supported (avoid crashes)
+  if momentum < 0:
+    return []
 
-    # Dead end: turn around
-    return ["R", "R", "R", "R"]
+  if momentum == 0:
+    if left_ok:
+      # Enter left corridor safely and stop at next center (tight corner with decel to zero)
+      return ["F0LT"]
+    if fwd_ok:
+      # Start forward motion to next center (full step to m=1)
+      return ["F2"]
+    if right_ok:
+      # Enter right corridor safely and stop at next center
+      return ["F0RT"]
+    # Dead end: in-place 180°
+    return ["R","R","R","R"]
+
+  # momentum > 0 (forward)
+  if left_ok:
+    # Decelerate to 0 on the corner; arrive stopped in new corridor
+    return ["F0LT"]
+  if fwd_ok:
+    # Keep cruising straight to the next center
+    return ["F1"]
+  if right_ok:
+    # Decelerate to 0 on the corner; arrive stopped in new corridor
+    return ["F0RT"]
+
+  # At a true dead-end with m>0 there is no safe legal token under the given rules.
+  # Avoid issuing any command to prevent a crash; the host may call again at a different moment.
+  return []
 
 @app.route("/micro-mouse", methods=["POST"])
 def micro_mouse():
-    try:
-        data = request.get_json(force=True, silent=False) or {}
-    except Exception:
-        # On malformed input from evaluator, request end to avoid a crash
-        return jsonify({"instructions": [], "end": True})
+  try:
+    data = request.get_json(force=True, silent=False) or {}
+  except Exception:
+    return jsonify({"instructions": [], "end": True})
 
-    game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms = sanitize_request(data)
+  game_uuid, sensor, momentum, goal_reached, total_time_ms, run_time_ms, best_time_ms, run = sanitize_request(data)
 
-    if game_uuid not in GAME_STATE:
-        GAME_STATE[game_uuid] = {"initialized": True}
+  if game_uuid not in GAME_STATE:
+    GAME_STATE[game_uuid] = {"initialized": True}
 
-    # End immediately if the evaluator signals goal or budget exhausted
-    if should_end_challenge(goal_reached, total_time_ms):
-        return jsonify({"instructions": [], "end": True})
+  if momentum < -4 or momentum > 4:
+    return jsonify({"instructions": [], "end": True})
 
-    # Momentum bounds check
-    if momentum < -4 or momentum > 4:
-        return jsonify({"instructions": [], "end": True})
+  if should_end(goal_reached, total_time_ms):
+    return jsonify({"instructions": [], "end": True})
 
-    instr = pick_actions(sensor, momentum)
+  instr = plan_instructions(sensor, momentum)
 
-    # Safety net: if the chosen plan is empty (unsafe to proceed), end to avoid a crash.
-    if not instr:
-        return jsonify({"instructions": [], "end": True})
+  if not instr:
+    # If no safe plan exists right now, request to end to avoid crash (rare edge case).
+    return jsonify({"instructions": [], "end": True})
 
-    # Final assert: never emit F1 or any V*/corner/moving-rotation tokens
-    for t in instr:
-        if t not in ("F2", "F0", "L", "R"):
-            return jsonify({"instructions": [], "end": True})
+  # Final guard: allow only the planned safe token set
+  allowed = {"F2","F1","F0LT","F0RT","L","R"}
+  for t in instr:
+    if t not in allowed:
+      return jsonify({"instructions": [], "end": True})
 
-    return jsonify({"instructions": instr, "end": False})
+  return jsonify({"instructions": instr, "end": False})
 
 
 # ==============================
