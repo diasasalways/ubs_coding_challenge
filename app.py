@@ -8,6 +8,7 @@ from flask_cors import CORS
 import random
 from collections import defaultdict, deque, Counter
 import re, math
+from dataclasses import dataclass
 
 app = Flask(__name__)
 
@@ -109,144 +110,152 @@ def _apply_bounce_forward(current_square: int, roll_value: int, last_square: int
     return tentative
 
 
-def _simulate_turn(
-    start_square: int,
-    first_roll: int,
-    is_last_player: bool,
+@dataclass(frozen=True)
+class _PlannerState:
+    positions: Tuple[int, ...]
+    current_player: int
+    # -1: resolve Smoke (backward by next roll), 0: none, +1: resolve Mirror (forward by next roll)
+    pending_effect: int
+
+
+def _resolve_fixed_jumps(square: int, fixed_jumps: Dict[int, int]) -> int:
+    # Follow chains if any, defensively cap at a reasonable number
+    for _ in range(8):
+        nxt = fixed_jumps.get(square)
+        if nxt is None:
+            return square
+        square = nxt
+    return square
+
+
+def _apply_roll(
+    state: _PlannerState,
+    roll: int,
     last_square: int,
     fixed_jumps: Dict[int, int],
     smoke_squares: Set[int],
     mirror_squares: Set[int],
-) -> Tuple[int, List[int]]:
-    used_rolls: List[int] = [first_roll]
-    square = _apply_bounce_forward(start_square, first_roll, last_square)
-    # Apply fixed jump if any
-    if square in fixed_jumps:
-        square = fixed_jumps[square]
-    # Resolve any dynamic squares (smoke/mirror), possibly chaining
-    while True:
-        if square == last_square:
-            return square, used_rolls
+) -> Tuple[_PlannerState, int]:
+    positions = list(state.positions)
+    p = state.current_player
 
-        if square in smoke_squares:
-            # Move backwards by the next roll
-            next_roll = 1 if is_last_player else 6
-            used_rolls.append(next_roll)
-            square = max(1, square - next_roll)
-            if square in fixed_jumps:
-                square = fixed_jumps[square]
-            # continue loop to handle subsequent effects
-            continue
-
-        if square in mirror_squares:
-            # Move forwards by the next roll
-            next_roll = 6 if is_last_player else 1
-            used_rolls.append(next_roll)
-            square = _apply_bounce_forward(square, next_roll, last_square)
-            if square in fixed_jumps:
-                square = fixed_jumps[square]
-            # continue loop to handle subsequent effects
-            continue
-
-        break
-
-    return square, used_rolls
-
-
-def _choose_roll_for_player(
-    start_square: int,
-    is_last_player: bool,
-    last_square: int,
-    fixed_jumps: Dict[int, int],
-    smoke_squares: Set[int],
-    mirror_squares: Set[int],
-) -> Tuple[int, List[int], int]:
-    """Return (first_roll_choice, all_rolls_used_this_turn, end_square)."""
-    best_first_roll = 1
-    best_rolls_used: List[int] = [1]
-    best_end_square = start_square
-
-    # Prefer immediate win for last player if possible
-    if is_last_player:
-        for r in range(1, 7):
-            end_sq, rolls_used = _simulate_turn(
-                start_square,
-                r,
-                True,
-                last_square,
-                fixed_jumps,
-                smoke_squares,
-                mirror_squares,
-            )
-            if end_sq == last_square:
-                return r, rolls_used, end_sq
-
-    # Evaluate options
-    for r in range(1, 7):
-        end_sq, rolls_used = _simulate_turn(
-            start_square,
-            r,
-            is_last_player,
-            last_square,
-            fixed_jumps,
-            smoke_squares,
-            mirror_squares,
-        )
-
-        if is_last_player:
-            # Maximize progress, prefer fewer rolls to improve score
-            if end_sq > best_end_square or (
-                end_sq == best_end_square and len(rolls_used) < len(best_rolls_used)
-            ):
-                best_first_roll, best_rolls_used, best_end_square = r, rolls_used, end_sq
+    # Determine direction of movement
+    if state.pending_effect == -1:
+        # Smoke resolution: move backwards by roll
+        new_pos = max(1, positions[p] - roll)
+        new_pos = _resolve_fixed_jumps(new_pos, fixed_jumps)
+        # After resolving, check for another dynamic tile
+        if new_pos in smoke_squares:
+            next_effect = -1
+            next_player = p
+        elif new_pos in mirror_squares:
+            next_effect = +1
+            next_player = p
         else:
-            # Avoid letting non-last players win; otherwise minimize progress and prefer fewer rolls
-            if end_sq == last_square:
-                # Disprefer any result that lets a non-last player win
-                continue
+            next_effect = 0
+            next_player = (p + 1) % len(positions)
 
-            if (
-                best_end_square == last_square or
-                end_sq < best_end_square or
-                (end_sq == best_end_square and len(rolls_used) < len(best_rolls_used))
-            ):
-                best_first_roll, best_rolls_used, best_end_square = r, rolls_used, end_sq
+    else:
+        # Normal or Mirror resolution (both forward with bounce)
+        new_pos = _apply_bounce_forward(positions[p], roll, last_square)
+        new_pos = _resolve_fixed_jumps(new_pos, fixed_jumps)
+        if new_pos == last_square:
+            positions[p] = new_pos
+            return _PlannerState(tuple(positions), p, 0), p
 
-    return best_first_roll, best_rolls_used, best_end_square
+        if new_pos in smoke_squares:
+            next_effect = -1
+            next_player = p
+        elif new_pos in mirror_squares:
+            next_effect = +1
+            next_player = p
+        else:
+            next_effect = 0
+            next_player = (p + 1) % len(positions)
+
+    positions[p] = new_pos
+    return _PlannerState(tuple(positions), next_player, next_effect), -1
+
+
+def _heuristic(
+    state: _PlannerState,
+    last_square: int,
+) -> float:
+    positions = state.positions
+    last_idx = len(positions) - 1
+    last_pos = positions[last_idx]
+    best_other = max(positions[:last_idx]) if last_idx > 0 else 1
+    dist_last = last_square - last_pos
+    dist_other = last_square - best_other
+    # Larger is better
+    return 1000.0 * (dist_other - dist_last) - 5.0 * (state.pending_effect != 0)
+
+
+def _beam_search_plan(
+    board_size: int,
+    players: int,
+    fixed_jumps: Dict[int, int],
+    smoke_squares: Set[int],
+    mirror_squares: Set[int],
+    max_steps: int = 4000,
+    beam_width: int = 128,
+) -> List[int]:
+    start = _PlannerState(tuple([1] * players), 0, 0)
+    last_square = board_size
+
+    # Each entry: (state, rolls_so_far)
+    beam: List[Tuple[_PlannerState, List[int]]] = [(start, [])]
+    seen_best_depth: Dict[Tuple, int] = { (start.positions, start.current_player, start.pending_effect): 0 }
+
+    for depth in range(max_steps):
+        candidates: List[Tuple[_PlannerState, List[int]]] = []
+        for state, seq in beam:
+            # If any non-last player already finished, drop this branch
+            for i in range(players - 1):
+                if state.positions[i] == last_square:
+                    break
+            else:
+                # Expand six possible rolls
+                for r in (1, 2, 3, 4, 5, 6):
+                    next_state, winner = _apply_roll(state, r, last_square, fixed_jumps, smoke_squares, mirror_squares)
+                    new_seq = seq + [r]
+                    if winner == players - 1:
+                        return new_seq
+                    # If someone else won, skip
+                    someone_else_won = (winner != -1 and winner != players - 1)
+                    if someone_else_won:
+                        continue
+                    key = (next_state.positions, next_state.current_player, next_state.pending_effect)
+                    prev_best = seen_best_depth.get(key)
+                    if prev_best is None or prev_best > len(new_seq):
+                        seen_best_depth[key] = len(new_seq)
+                        candidates.append((next_state, new_seq))
+
+        if not candidates:
+            break
+
+        # Keep top beam_width by heuristic
+        candidates.sort(key=lambda item: _heuristic(item[0], last_square), reverse=True)
+        beam = candidates[:beam_width]
+
+    # Fallback: no plan found within limits. Return a safe default of rolling 1s.
+    return [1] * min(100, max_steps)
 
 
 def _solve_slsm(board_size: int, players: int, jumps: List[str]) -> List[int]:
     if board_size <= 0 or players < 2:
         return []
-    last_square = board_size
-    positions: List[int] = [1 for _ in range(players)]
     fixed_jumps, smoke_squares, mirror_squares = _parse_slsm_jumps(jumps)
-
-    all_rolls: List[int] = []
-    current_player = 0
-    safety_roll_cap = max(2000, board_size * 10)
-
-    while len(all_rolls) < safety_roll_cap:
-        is_last = (current_player == players - 1)
-        start_sq = positions[current_player]
-        first_roll, rolls_used, end_sq = _choose_roll_for_player(
-            start_sq,
-            is_last,
-            last_square,
-            fixed_jumps,
-            smoke_squares,
-            mirror_squares,
-        )
-
-        all_rolls.extend(rolls_used)
-        positions[current_player] = end_sq
-
-        if end_sq == last_square:
-            break
-
-        current_player = (current_player + 1) % players
-
-    return all_rolls
+    # Beam-search for a sequence that makes the last player win first
+    return _beam_search_plan(
+        board_size,
+        players,
+        fixed_jumps,
+        smoke_squares,
+        mirror_squares,
+        max_steps=max(4000, board_size * 12),
+        beam_width=160,
+    )
 
 
 @app.route("/slsm", methods=["POST"])
