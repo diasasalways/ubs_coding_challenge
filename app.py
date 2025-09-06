@@ -44,18 +44,18 @@ def trivia():
             3,  # zhb "Filler (Encore)": What are the Three Pillars of UBS?
             3,  # zhb chase the flag prefix
             4,  # zhb Snakes and Ladders Power Up!": Which is a definitive false statement for the earlier version inspiring this?
-            1,  # 14. "The Ink Archive": What's the ancient civilization that preces the octupusini in the ink archive?
+            1,  # zhb 14. "The Ink Archive": What's the ancient civilization that preces the octupusini in the ink archive?
             2,  # zhb 15. "CoolCode Hacker": What is the primary goal of an ethical hacker?
-            1,  # 16. "Fog-of-Wall": When you send a response to the challenge server, you need to specify an action type. How many possible action types are there?
+            1,  # zhb 16. "Fog-of-Wall": When you send a response to the challenge server, you need to specify an action type. How many possible action types are there?
             1,  # zhb 17. "Filler 2": What is the prize for winning this competition?
-            99,  # 18. "Duolingo Sorting": Which language is not in this question?
+            2,  # zhb 18. "Duolingo Sorting": Which language is not in this question?
             99,  # 19. "Sailing Club": What is the maximum number of individual bookings made at the sailing club (for any given dataset received)?
             99,  # 20. "The Mage's Gambit": Which Tarot Card represents Klein Moretti in Lord of Mysteries?
             99,  # 21. "2048": How big is the largest grid in the 2048 challenge?
             2,  # zhb 22. "Trading Bot": How many trades does the challenge require to execute?
             99,  # 23. "Micro-Mouse": With zero momentum and the micro-mouse oriented along a cardinal axis (N, E, S, or W), how many legal move combinations are there?
             99,  # 24. "Filler 3": In which of the following locations does UBS not have a branch office?
-            99,  # 25. "Filler 4 (Last one)": What was UBS's total comprehensive income for Q2 2025 (in USD)?
+            2,  # zhb 25. "Filler 4 (Last one)": What was UBS's total comprehensive income for Q2 2025 (in USD)?
         ]
     }
     return jsonify(res), 200
