@@ -1461,43 +1461,27 @@ def simulate_batch(g: ChallengeState, instructions: List[str], end_flag: bool) -
 
 # Controller
 def controller_plan(g: ChallengeState, sensed: List[int]) -> List[str]:
-    # Simple left-hand-ish: prefer left turn if clear, else straight, else right; brake to stop before rotating
-    instr: List[str] = []
-
+    # Planner: avoid rotations when moving; emit a forward burst when clear and at rest
     if g.goal_reached:
-        # Stop after reaching goal
         return ["BB", "BB"]
 
     front = sensed[2]
-    left = sensed[0]
-    right = sensed[4]
 
     if g.mouse.momentum < 0:
-        # Decelerate to 0 before any forward accel
-        instr.append("V0")
-        return instr
+        return ["V0"]
 
-    # If blocked ahead, stop then rotate left
+    # If blocked ahead, brake; when stopped, rotate in place
     if front == 1:
         if g.mouse.momentum > 0:
-            instr.append("BB")
-            return instr
-        # Rotate left 90° at rest
-        instr.extend(["L", "L"])
-        return instr
+            return ["BB"]
+        return ["L", "L"]
 
-    # Prefer left if clear: rotate then go
-    if left == 0 and g.mouse.momentum == 0:
-        instr.extend(["L", "L"])
-        return instr
+    # At rest and clear ahead: emit sample burst
+    if g.mouse.momentum == 0:
+        return ["F2", "F2", "BB"]
 
-    # Go straight; accelerate to +2, then hold
-    if g.mouse.momentum < 2:
-        instr.append("F2")
-    else:
-        instr.append("F1")
-
-    return instr
+    # Otherwise keep accelerating/holding forward
+    return ["F2"] if g.mouse.momentum < 2 else ["F1"]
 
 @app.route("/micro-mouse", methods=["POST"])
 def micro_mouse():
@@ -1508,6 +1492,21 @@ def micro_mouse():
         return jsonify({"error": "game_uuid required"}), 400
 
     g = get_game(game_uuid)
+
+    if isinstance(payload.get("total_time_ms"), (int, float)):
+        g.total_time_ms = int(payload["total_time_ms"])  # rounded externally
+    if isinstance(payload.get("run_time_ms"), (int, float)):
+        g.run_time_ms = int(payload["run_time_ms"])  # rounded externally
+    if "best_time_ms" in payload:
+        best = payload.get("best_time_ms")
+        g.best_time_ms = int(best) if isinstance(best, (int, float)) else None
+    if isinstance(payload.get("goal_reached"), bool):
+        g.goal_reached = payload["goal_reached"]
+    if isinstance(payload.get("run"), int):
+        g.run = payload["run"]
+    if isinstance(payload.get("momentum"), (int, float)):
+        g.mouse.momentum = clamp_momentum(int(payload["momentum"]))
+
 
     if payload.get("end") is True:
         g.ended = True
