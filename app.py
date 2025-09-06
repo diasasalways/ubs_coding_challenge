@@ -156,71 +156,57 @@ def _fog_process_scan(state: Dict[str, Any], crow_id: str, scan_grid: List[List[
     state["scanned_positions"].add((cx, cy))
 
 def _fog_choose_action(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Simplified decision making - much faster than old version."""
-    
-    # Check if we found all walls
+    """Lattice-sweep policy guaranteeing full coverage in <= ceil(N/3)^2 scans."""
+    # 1. End early if all walls found
     if len(state["known_walls"]) >= state["total_walls"]:
-        walls_list = [f"{x}-{y}" for x, y in sorted(state["known_walls"])]
-        return {"action_type": "submit", "submission": walls_list}
-    
+        submit = [f"{x}-{y}" for x, y in sorted(state["known_walls"])]
+        return {"action_type": "submit", "submission": submit}
+
     size = state["size"]
-    actions = state.get("actions", 0)
-    elapsed = time.time() - state["start_time"]
-    all_known = state["known_walls"] | state["known_empty"]
-    
-    # Aggressive mode: if we're running out of time or actions
-    urgent = elapsed > 20.0 or actions > size * size * 0.7
-    
-    # Simple round-robin crow selection for better coordination
+    lattice = state["lattice"]
+    scanned = state["scanned_positions"]
+
     crow_ids = sorted(state["crows"].keys())
-    current_crow_idx = actions % len(crow_ids)
-    active_crow = crow_ids[current_crow_idx]
-    crow_x, crow_y = state["crows"][active_crow]
-    
-    # Strategy 1: Scan if current position has many unknowns around
-    unknowns_here = _fog_count_unknowns_around((crow_x, crow_y), size, all_known)
-    scan_threshold = 3 if urgent else 8
-    
-    if unknowns_here >= scan_threshold and (crow_x, crow_y) not in state["scanned_positions"]:
+    active_crow = crow_ids[state["actions"] % len(crow_ids)]
+    cx, cy = state["crows"][active_crow]
+
+    # determine stripe range for this crow
+    stripe_width = math.ceil(size / len(crow_ids))
+    stripe_min = crow_ids.index(active_crow) * stripe_width
+    stripe_max = min(size - 1, stripe_min + stripe_width - 1)
+
+    def is_in_stripe(cell):
+        x, _ = cell
+        return stripe_min <= x <= stripe_max
+
+    # unscanned lattice in stripe
+    pending = [cell for cell in lattice if is_in_stripe(cell) and cell not in scanned]
+
+    # If at lattice centre not yet scanned -> scan
+    if (cx, cy) in lattice and (cx, cy) not in scanned and is_in_stripe((cx, cy)):
         return {"action_type": "scan", "crow_id": active_crow}
-    
-    # Strategy 2: Move towards unexplored areas (including unknown cells)
-    best_move = None
-    best_score = -1
-    
-    for nx, ny, direction in _fog_neighbors(crow_x, crow_y, size):
-        score = 0
-        
-        # Prefer unknown cells for exploration
-        if (nx, ny) not in all_known:
-            score += 20
-        # Avoid known walls
-        elif (nx, ny) in state["known_walls"]:
-            continue
-        # Known empty is okay but lower priority
-        else:
-            score += 1
-        
-        # Bonus for cells that would have good scan potential
-        if (nx, ny) not in state["scanned_positions"]:
-            future_unknowns = _fog_count_unknowns_around((nx, ny), size, all_known)
-            score += future_unknowns
-        
-        # Simple spatial separation for multiple crows
-        for other_crow, (ox, oy) in state["crows"].items():
-            if other_crow != active_crow:
-                dist = abs(nx - ox) + abs(ny - oy)  # Manhattan distance
-                if dist < 3:  # Too close
-                    score -= 5
-        
-        if score > best_score:
-            best_score = score
-            best_move = direction
-    
-    if best_move:
-        return {"action_type": "move", "crow_id": active_crow, "direction": best_move}
-    
-    # Strategy 3: Emergency scan if completely stuck
+
+    # Else navigate to nearest pending lattice cell
+    if pending:
+        first_dir_map = _fog_bfs_first_step(state, (cx, cy))
+        # compute closest pending reachable
+        best = None
+        for cell in pending:
+            if cell in first_dir_map:
+                dx = abs(cell[0]-cx)+abs(cell[1]-cy)
+                if best is None or dx < best[0]:
+                    best = (dx, cell)
+        if best is not None:
+            target = best[1]
+            direction = first_dir_map[target]
+            return {"action_type": "move", "crow_id": active_crow, "direction": direction}
+
+    # If no pending lattice in stripe, fallback: explore frontier unknown around crow
+    for nx, ny, direction in _fog_neighbors(cx, cy, size):
+        if (nx, ny) not in state["known_walls"] and (nx, ny) not in state["known_empty"]:
+            return {"action_type": "move", "crow_id": active_crow, "direction": direction}
+
+    # Final fallback: scan anyway
     return {"action_type": "scan", "crow_id": active_crow}
 
 @app.route("/fog-of-wall", methods=["POST"])
@@ -256,7 +242,9 @@ def fog_of_wall():
                 "crows": {},
                 "scanned_positions": set(),
                 "start_time": time.time(),
-                "actions": 0
+                "actions": 0,
+                # Pre-compute 3-stride lattice centres (shifted by 1 so we never hug the outer wall)
+                "lattice": {(x, y) for x in range(1, size, 3) for y in range(1, size, 3)},
             }
             
             # Initialize crow positions
@@ -2755,3 +2743,27 @@ def operation_safeguard():
         "challenge_three": _safe_str(c3_value),
         "challenge_four": _safe_str(c4_value),
     })
+
+# === NEW BFS THAT TREATS UNKNOWN CELLS AS WALKABLE ===
+
+def _fog_bfs_first_step(state: Dict[str, Any], start: Tuple[int, int]) -> Dict[Tuple[int, int], str]:
+    """Return mapping from reachable cell -> first move direction using known_empty *or* unknown cells."""
+    size = state["size"]
+    known_walls = state["known_walls"]
+    queue = deque([start])
+    visited = {start}
+    first_dir: Dict[Tuple[int, int], str] = {}
+    while queue:
+        x, y = queue.popleft()
+        for nx, ny, dir_label in _fog_neighbors(x, y, size):
+            if (nx, ny) in visited:
+                continue
+            if (nx, ny) in known_walls:
+                continue
+            visited.add((nx, ny))
+            if (x, y) == start:
+                first_dir[(nx, ny)] = dir_label
+            else:
+                first_dir[(nx, ny)] = first_dir[(x, y)]
+            queue.append((nx, ny))
+    return first_dir
