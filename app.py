@@ -35,10 +35,25 @@ def trivia():
             2,  # zhb "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?
             3,  # zhb "MST Calculation": What is the average number of nodes in a test case?
             4,  # zhb "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
-            4,  # "Operation Safeguard": What is the smallest font size in our question?
+            4,  # zhb "Operation Safeguard": What is the smallest font size in our question?
             5,  # zhb "Capture The Flag": Which of these are anagrams of the challenge name?
             4,  # zhb "Filler 1": Where has UBS Global Coding Challenge been held before?
-            3   # zhb "Trading Formula": When comparing your answer to the correct answer, what precision level do you have to ensure your answer is precise to?
+            3,  # zhb "Trading Formula": When comparing your answer to the correct answer, what precision level do you have to ensure your answer is precise to?
+            3,  # zhb "Filler (Encore)": What are the Three Pillars of UBS?
+            3,  # zhb chase the flag prefix
+            4,  # zhb Snakes and Ladders Power Up!": Which is a definitive false statement for the earlier version inspiring this?
+            1,  # zhb 14. "The Ink Archive": What's the ancient civilization that preces the octupusini in the ink archive?
+            2,  # zhb 15. "CoolCode Hacker": What is the primary goal of an ethical hacker?
+            1,  # zhb 16. "Fog-of-Wall": When you send a response to the challenge server, you need to specify an action type. How many possible action types are there?
+            1,  # zhb 17. "Filler 2": What is the prize for winning this competition?
+            2,  # zhb 18. "Duolingo Sorting": Which language is not in this question?
+            2,  # zhb 19. "Sailing Club": What is the maximum number of individual bookings made at the sailing club (for any given dataset received)?
+            1,  # zhb 20. "The Mage's Gambit": Which Tarot Card represents Klein Moretti in Lord of Mysteries?
+            3,  # check 21. "2048": How big is the largest grid in the 2048 challenge?
+            2,  # zhb 22. "Trading Bot": How many trades does the challenge require to execute?
+            3,  # zhb 23. "Micro-Mouse": With zero momentum and the micro-mouse oriented along a cardinal axis (N, E, S, or W), how many legal move combinations are there?
+            4,  # zhb 24. "Filler 3": In which of the following locations does UBS not have a branch office?
+            2,  # zhb 25. "Filler 4 (Last one)": What was UBS's total comprehensive income for Q2 2025 (in USD)?
         ]
     }
     return jsonify(res), 200
