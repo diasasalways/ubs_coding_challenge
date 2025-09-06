@@ -722,3 +722,139 @@ def duolingo_sort():
     if err is not None:
         return bad_request(err)
     return jsonify({"sortedList": result})
+
+
+@app.route("/the-mages-gambit", methods=["POST"])
+def mages_gambit():
+    """
+    Calculate the minimum time Klein needs to defeat all undead and join the expedition.
+
+    Expected input format:
+    [
+        {
+            "intel": [[front, mp_cost], ...],
+            "reserve": int,
+            "fronts": int,
+            "stamina": int
+        },
+        ...
+    ]
+
+    Returns:
+    [
+        {"time": int},
+        ...
+    ]
+    """
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, list):
+            return jsonify({"error": "Expected array of test cases"}), 400
+
+        results = []
+
+        for test_case in payload:
+            if not isinstance(test_case, dict):
+                return jsonify({"error": "Each test case must be an object"}), 400
+
+            intel = test_case.get("intel", [])
+            reserve = test_case.get("reserve", 0)
+            fronts = test_case.get("fronts", 0)
+            stamina = test_case.get("stamina", 0)
+
+            # Validate inputs
+            if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int) or not isinstance(fronts, int):
+                return jsonify({"error": "Invalid input types"}), 400
+
+            if reserve <= 0 or stamina <= 0 or fronts <= 0:
+                return jsonify({"error": "'reserve', 'stamina', and 'fronts' must be positive"}), 400
+
+            for attack in intel:
+                if not isinstance(attack, list) or len(attack) != 2:
+                    return jsonify({"error": "Each intel entry must be [front, mp_cost]"}), 400
+                front, mp_cost = attack
+                if not isinstance(front, int) or not isinstance(mp_cost, int):
+                    return jsonify({"error": "Front and MP cost must be integers"}), 400
+                if front < 1 or front > fronts:
+                    return jsonify({"error": f"Front must be between 1 and {fronts}"}), 400
+                if mp_cost < 1 or mp_cost > reserve:
+                    return jsonify({"error": f"MP cost must be between 1 and {reserve}"}), 400
+
+            # Calculate minimum time
+            min_time = calculate_mage_combat_time(intel, reserve, stamina)
+            results.append({"time": min_time})
+
+        return jsonify(results), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def calculate_mage_combat_time(intel, reserve, stamina):
+    """
+    Calculate the minimum time needed for Klein to defeat all undead.
+
+    Args:
+        intel: List of [front, mp_cost] representing undead attacks in sequence
+        reserve: Maximum mana capacity
+        stamina: Number of spells that can be cast before cooldown required
+
+    Returns:
+        int: Minimum time in minutes
+    """
+    # Must end in cooldown even if there are no attacks
+    if not intel:
+        return 10
+
+    current_mp = reserve
+    current_stamina = stamina
+    total_time = 0
+    last_front = None
+
+    i = 0
+    n = len(intel)
+    while i < n:
+        front, _ = intel[i]
+
+        # Compute maximal same-front run [i, j)
+        j = i
+        run_len = 0
+        run_mp_sum = 0
+        while j < n and intel[j][0] == front:
+            run_len += 1
+            run_mp_sum += intel[j][1]
+            j += 1
+
+        # If switching to a new front, consider pre-cooldown to avoid mid-run re-targets
+        if last_front != front:
+            needs_pre_cool = (current_mp < run_mp_sum) or (current_stamina < run_len)
+            not_full = (current_mp < reserve) or (current_stamina < stamina)
+            if needs_pre_cool and not_full:
+                total_time += 10  # cooldown
+                current_mp = reserve
+                current_stamina = stamina
+
+            # Targeting the new front
+            total_time += 10
+            last_front = front
+
+        # Process the run
+        k = i
+        while k < j:
+            _, mp_cost = intel[k]
+            if current_mp < mp_cost or current_stamina == 0:
+                # Cooldown mid-run, then re-target same front
+                total_time += 10  # cooldown
+                current_mp = reserve
+                current_stamina = stamina
+                total_time += 10  # retarget same front
+
+            current_mp -= mp_cost
+            current_stamina -= 1
+            k += 1
+
+        i = j
+
+    # Final cooldown required to be ready for expedition
+    total_time += 10
+    return total_time
