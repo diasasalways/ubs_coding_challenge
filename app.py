@@ -1001,72 +1001,65 @@ def duolingo_sort():
     return jsonify({"sortedList": result})
 
 
-@app.route("/the-mages-gambit", methods=["POST"])
-def mages_gambit():
-    """
-    Calculate the minimum time Klein needs to defeat all undead and join the expedition.
+RETARGET_TIME = 10
+COOLDOWN_TIME = 10
 
-    Expected input format:
-    [
-        {
-            "intel": [[front, mp_cost], ...],
-            "reserve": int,
-            "fronts": int,
-            "stamina": int
-        },
-        ...
-    ]
+def estimate_time_scenario(scn):
+	time = 0
+	intel = scn.get('intel', [])
+	reserve = scn.get('reserve', 0)
+	stamina_max = scn.get('stamina', 0)
 
-    Returns:
-    [
-        {"time": int},
-        ...
-    ]
-    """
-    try:
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, list):
-            return jsonify({"error": "Expected array of test cases"}), 400
+	for _, cost in intel:
+		if cost > reserve:
+			return -1
 
-        results = []
+	mana = reserve
+	stamina = stamina_max
+	prev_front = None
+	last_action_was_cooldown = False
 
-        for test_case in payload:
-            if not isinstance(test_case, dict):
-                return jsonify({"error": "Each test case must be an object"}), 400
+	for front, cost in intel:
+		if mana < cost or stamina == 0:
+			time += COOLDOWN_TIME
+			mana = reserve
+			stamina = stamina_max
+			prev_front = None
+			last_action_was_cooldown = True
 
-            intel = test_case.get("intel", [])
-            reserve = test_case.get("reserve", 0)
-            fronts = test_case.get("fronts", 0)
-            stamina = test_case.get("stamina", 0)
+		time += 0 if prev_front == front else RETARGET_TIME
+		mana -= cost
+		stamina -= 1
+		prev_front = front
+		last_action_was_cooldown = False
 
-            # Validate inputs
-            if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int) or not isinstance(fronts, int):
-                return jsonify({"error": "Invalid input types"}), 400
+	if not last_action_was_cooldown:
+		time += COOLDOWN_TIME
 
-            if reserve <= 0 or stamina <= 0:
-                return jsonify({"error": "'reserve' and 'stamina' must be positive"}), 400
+	return time
 
-            for attack in intel:
-                if not isinstance(attack, list) or len(attack) != 2:
-                    return jsonify({"error": "Each intel entry must be [front, mp_cost]"}), 400
-                front, mp_cost = attack
-                if not isinstance(front, int) or not isinstance(mp_cost, int):
-                    return jsonify({"error": "Front and MP cost must be integers"}), 400
-                if front < 1:
-                    return jsonify({"error": "Front must be >= 1"}), 400
-                if fronts > 0 and front > fronts:
-                    return jsonify({"error": f"Front must be between 1 and {fronts}"}), 400
-                if mp_cost < 1 or mp_cost > reserve:
-                    return jsonify({"error": f"MP cost must be between 1 and {reserve}"}), 400
+@app.route('/the-mages-gambit', methods=['POST'])
+def the_mages_gambit():
+	if request.mimetype != 'application/json':
+		return jsonify({"error": "Unsupported Media Type, expected application/json"}), 415
 
-            # Calculate minimum time
-            min_time = calculate_mage_combat_time(intel, reserve, stamina)
-            results.append({"time": min_time})
+	try:
+		data = request.get_json()
+	except Exception:
+		return jsonify({"error": "Invalid JSON"}), 400
 
-        return jsonify(results), 200
+	if not isinstance(data, list):
+		return jsonify({"error": "Expected a JSON array of scenarios"}), 400
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+	results = []
+	for scn in data:
+		if not isinstance(scn, dict):
+			results.append({"time": -1})
+			continue
+		time = estimate_time_scenario(scn)
+		results.append({"time": time})
+
+	return jsonify(results)
 
 
 def calculate_mage_combat_time(intel, reserve, stamina):
